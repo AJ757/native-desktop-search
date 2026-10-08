@@ -31,6 +31,7 @@ reqwest = { version = "0.13.5", features = ["json"] }
 tokio = { version = "1.53.1", features = ["full"] }
 tauri-plugin-global-shortcut = "2.4.0"
 keyring = { version = "4.2.0", features = ["apple-native-keyring-store"] }
+async-trait = "0.1.92"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
