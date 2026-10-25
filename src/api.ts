@@ -8,6 +8,7 @@ import type { Source } from "./bindings/Source";
 export const api = {
   search: (request: SearchRequest) => invoke<SearchResponse>("search", { request }),
   addSource: (request: AddSourceRequest) => invoke<Source>("add_source", { request }),
+  removeSource: (id: number) => invoke<void>("remove_source", { id }),
   listSources: () => invoke<Source[]>("list_sources"),
   getIndexStatus: () => invoke<IndexStatus>("get_index_status"),
 };

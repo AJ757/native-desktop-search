@@ -1,4 +1,4 @@
 [toolchain]
-channel = "1.99.1"          # <- put your exact version here
+channel = "1.99.1"  # CI and every developer build with this exact version
 components = ["rustfmt", "clippy"]
 profile = "minimal"

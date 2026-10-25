@@ -7,26 +7,38 @@
 use std::path::Path;
 
 use crate::config::AppPaths;
+use crate::sync::SyncService;
 use rusqlite::Connection;
 use std::sync::Mutex;
 
+use tauri::{AppHandle, Manager, Runtime};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{Builder, Rotation};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use crate::error::{AppError, Result};
 
+/// Label of the single app window (see `tauri.conf.json`).
+pub const MAIN_WINDOW: &str = "main";
+
 pub struct AppState {
     pub paths: AppPaths,
     db: Mutex<Connection>,
+    pub sync: SyncService,
     _log_guard: WorkerGuard, // keeps file logging alive; never read
 }
 
 impl AppState {
-    pub fn new(paths: AppPaths, conn: Connection, log_guard: WorkerGuard) -> Self {
+    pub fn new(
+        paths: AppPaths,
+        conn: Connection,
+        sync: SyncService,
+        log_guard: WorkerGuard,
+    ) -> Self {
         Self {
             paths,
             db: Mutex::new(conn),
+            sync,
             _log_guard: log_guard,
         }
     }
@@ -38,6 +50,30 @@ impl AppState {
             .lock()
             .map_err(|_| AppError::Other("database lock poisoned".into()))?;
         f(&conn)
+    }
+}
+
+/// Global hotkey action: hide the window if it is showing, otherwise bring
+/// it to the front with keyboard focus.
+pub fn toggle_main_window<R: Runtime>(app: &AppHandle<R>) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
+        tracing::warn!("main window not found");
+        return;
+    };
+    let visible = window.is_visible().unwrap_or(false);
+    let focused = window.is_focused().unwrap_or(false);
+    let minimized = window.is_minimized().unwrap_or(false);
+    // Visible but behind other windows: bring it forward instead of hiding.
+    let result = if visible && focused && !minimized {
+        window.hide()
+    } else {
+        window
+            .unminimize()
+            .and_then(|_| window.show())
+            .and_then(|_| window.set_focus())
+    };
+    if let Err(e) = result {
+        tracing::warn!("could not toggle main window: {e}");
     }
 }
 

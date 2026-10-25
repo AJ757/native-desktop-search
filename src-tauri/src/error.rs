@@ -19,6 +19,9 @@ pub enum AppError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("file watcher error: {0}")]
+    Watch(#[from] notify_debouncer_full::notify::Error),
+
     #[error("configuration error: {0}")]
     Config(String),
 

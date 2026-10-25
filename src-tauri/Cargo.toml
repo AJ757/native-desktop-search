@@ -1,8 +1,14 @@
 [package]
 name = "native-desktop-search"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Local-first desktop search across local files and cloud sources"
+authors = [
+    "Ajeetha J",
+    "Vishwani",
+    "K Sai Jyothirmayi",
+    "Lakshana Baskaran",
+    "Vandana Padman",
+]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -38,6 +44,9 @@ tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 rusqlite_migration = "2.6.0"
 ts-rs = "12.0.1"
+notify-debouncer-full = "0.7.0"
+walkdir = "2.5.0"
+tauri-plugin-dialog = "2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
