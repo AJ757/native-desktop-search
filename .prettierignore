@@ -1,0 +1,6 @@
+dist
+node_modules
+src-tauri
+src/bindings
+package-lock.json
+*.md

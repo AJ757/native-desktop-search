@@ -11,7 +11,7 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "tmp_scaffold_lib"
+name = "native_desktop_search_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -31,6 +31,13 @@ reqwest = { version = "0.13.5", features = ["json"] }
 tokio = { version = "1.53.1", features = ["full"] }
 tauri-plugin-global-shortcut = "2.4.0"
 keyring = { version = "4.2.0", features = ["apple-native-keyring-store"] }
+async-trait = "0.1.92"
+thiserror = "2.0.21"
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+rusqlite_migration = "2.6.0"
+ts-rs = "12.0.1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
@@ -40,3 +47,6 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

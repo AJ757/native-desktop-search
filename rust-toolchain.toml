@@ -1,0 +1,4 @@
+[toolchain]
+channel = "1.99.1"          # <- put your exact version here
+components = ["rustfmt", "clippy"]
+profile = "minimal"
