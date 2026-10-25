@@ -29,6 +29,17 @@ pub fn run() {
             let root = app.path().app_local_data_dir()?;
             let paths = AppPaths::new(root);
             paths.ensure_dirs()?;
+
+            let guard = app::init_logging(&paths.logs_dir())?;
+            app::install_panic_hook();
+
+            tracing::info!(
+                version = env!("CARGO_PKG_VERSION"),
+                data_dir = %paths.root().display(),
+                "Native Desktop Search starting"
+            );
+
+            app.manage(app::LogGuard(guard)); // keeps logging alive
             app.manage(paths);
             Ok(())
         })

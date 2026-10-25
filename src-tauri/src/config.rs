@@ -4,7 +4,7 @@
 //! index, logs, model cache) and exposes them through a single `AppPaths`
 //! struct so no other module builds paths by hand.
 
-use std::io;
+use crate::error::Result;
 use std::path::{Path, PathBuf};
 
 /// Every location the app reads or writes lives under one root directory.
@@ -21,7 +21,7 @@ impl AppPaths {
     }
 
     /// Creates the root and all subfolders. Safe to call on every startup.
-    pub fn ensure_dirs(&self) -> io::Result<()> {
+    pub fn ensure_dirs(&self) -> Result<()> {
         for dir in [
             self.root(),
             &self.db_dir(),
