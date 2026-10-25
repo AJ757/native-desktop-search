@@ -31,6 +31,7 @@ client_secret*.json
 *.pem
 *.key
 
+
 # Local dev data (search index, database, embedding models)
 .fastembed_cache/
 *.db
