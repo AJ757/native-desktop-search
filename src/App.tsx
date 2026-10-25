@@ -11,7 +11,10 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   const refreshSources = () =>
-    api.listSources().then(setSources).catch((e) => setError(String(e)));
+    api
+      .listSources()
+      .then(setSources)
+      .catch((e) => setError(String(e)));
 
   useEffect(() => {
     refreshSources();
