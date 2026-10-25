@@ -5,7 +5,6 @@
 //! target (file path or URL), so the ingest pipeline treats all of them
 //! the same way.
 
-use crate::error::Result;
 use async_trait::async_trait;
 
 #[async_trait]

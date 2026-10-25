@@ -4,7 +4,6 @@
 //! must always be rebuildable from what is stored here.
 
 use std::path::Path;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use rusqlite::{params, Connection, Row};
