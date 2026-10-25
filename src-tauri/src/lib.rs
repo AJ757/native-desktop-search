@@ -40,6 +40,9 @@ pub fn run() {
             );
 
             app.manage(app::LogGuard(guard)); // keeps logging alive
+            let conn = db::open(&paths.db_file())?;
+            tracing::info!(db = %paths.db_file().display(), "database ready");
+            app.manage(db::Database(std::sync::Mutex::new(conn)));
             app.manage(paths);
             Ok(())
         })

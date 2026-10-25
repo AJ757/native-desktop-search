@@ -10,6 +10,9 @@ pub enum AppError {
     #[error("database error: {0}")]
     Db(#[from] rusqlite::Error),
 
+    #[error("migration error: {0}")]
+    Migration(#[from] rusqlite_migration::Error),
+    
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
