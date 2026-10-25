@@ -7,13 +7,15 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use rusqlite::Connection;
+use rusqlite::{params, Connection, Row};
 use rusqlite_migration::{Migrations, M};
+
+use serde::de::DeserializeOwned;
+
+use crate::types::{AddSourceRequest, Source};
 
 use crate::error::Result;
 
-/// The single shared connection, wrapped for Tauri state.
-pub struct Database(pub Mutex<Connection>);
 
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
@@ -43,6 +45,48 @@ pub fn open(path: &Path) -> Result<Connection> {
 
 pub fn open_in_memory() -> Result<Connection> {
     prepare(Connection::open_in_memory()?)
+}
+
+type RawSource = (i64, String, String, String);
+
+fn raw_source(row: &Row) -> rusqlite::Result<RawSource> {
+    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+}
+
+/// Parse "google_drive" etc. back into an enum using its serde form.
+fn parse_enum<T: DeserializeOwned>(s: String) -> Result<T> {
+    Ok(serde_json::from_value(serde_json::Value::String(s))?)
+}
+
+fn into_source((id, kind, config, status): RawSource) -> Result<Source> {
+    Ok(Source {
+        id,
+        kind: parse_enum(kind)?,
+        config: serde_json::from_str(&config)?,
+        status: parse_enum(status)?,
+    })
+}
+
+pub fn list_sources(conn: &Connection) -> Result<Vec<Source>> {
+    let mut stmt = conn.prepare("SELECT id, kind, config, status FROM sources ORDER BY id")?;
+    let raws = stmt
+        .query_map([], raw_source)?
+        .collect::<std::result::Result<Vec<RawSource>, _>>()?;
+    raws.into_iter().map(into_source).collect()
+}
+
+pub fn insert_source(conn: &Connection, req: &AddSourceRequest) -> Result<Source> {
+    conn.execute(
+        "INSERT INTO sources (kind, config) VALUES (?1, ?2)",
+        params![req.kind.as_str(), req.config.to_string()],
+    )?;
+    let id = conn.last_insert_rowid();
+    let raw = conn.query_row(
+        "SELECT id, kind, config, status FROM sources WHERE id = ?1",
+        [id],
+        raw_source,
+    )?;
+    into_source(raw)
 }
 
 #[cfg(test)]
@@ -117,5 +161,23 @@ mod tests {
             .query_row("SELECT title FROM documents", [], |r| r.get(0))
             .unwrap();
         assert_eq!(title, "second");
+    }
+
+    #[test]
+    fn insert_then_list_sources() {
+        let conn = open_in_memory().unwrap();
+        assert!(list_sources(&conn).unwrap().is_empty());
+
+        let req = AddSourceRequest {
+            kind: crate::types::SourceKind::Local,
+            config: serde_json::json!({ "path": "C:/notes" }),
+        };
+        let added = insert_source(&conn, &req).unwrap();
+        assert_eq!(added.kind, crate::types::SourceKind::Local);
+        assert_eq!(added.status, crate::types::SourceStatus::Idle);
+
+        let all = list_sources(&conn).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].config["path"], "C:/notes");
     }
 }

@@ -1,51 +1,74 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { useEffect, useState } from "react";
+import { api } from "./api";
+import type { SearchHit } from "./bindings/SearchHit";
+import type { SearchRequest } from "./bindings/SearchRequest";
+import type { Source } from "./bindings/Source";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+export default function App() {
+  const [query, setQuery] = useState("hello");
+  const [hits, setHits] = useState<SearchHit[]>([]);
+  const [sources, setSources] = useState<Source[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+  const refreshSources = () =>
+    api.listSources().then(setSources).catch((e) => setError(String(e)));
+
+  useEffect(() => {
+    refreshSources();
+  }, []);
+
+  async function runSearch() {
+    setError(null);
+    const request: SearchRequest = {
+      query,
+      filters: { sourceIds: [], fileTypes: [], modifiedAfter: null, modifiedBefore: null },
+      limit: 20,
+      mode: "keyword",
+    };
+    try {
+      const res = await api.search(request);
+      setHits(res.hits);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function addTestSource() {
+    setError(null);
+    try {
+      await api.addSource({ kind: "local", config: { path: "C:/test" } });
+      await refreshSources();
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <main style={{ padding: 24, fontFamily: "sans-serif" }}>
+      <h1>Native Desktop Search</h1>
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
+      <input value={query} onChange={(e) => setQuery(e.target.value)} />
+      <button onClick={runSearch}>Search</button>
+      <button onClick={addTestSource}>Add test source</button>
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
+      {error && <p style={{ color: "crimson" }}>Error: {error}</p>}
+
+      <ul>
+        {hits.map((h) => (
+          <li key={h.documentId}>
+            <strong>{h.title}</strong>: {h.snippet}
+          </li>
+        ))}
+      </ul>
+
+      <h3>Sources ({sources.length})</h3>
+      <ul>
+        {sources.map((s) => (
+          <li key={s.id}>
+            #{s.id} {s.kind} ({s.status})
+          </li>
+        ))}
+      </ul>
     </main>
   );
 }
-
-export default App;

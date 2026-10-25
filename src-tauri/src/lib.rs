@@ -39,14 +39,15 @@ pub fn run() {
                 "Native Desktop Search starting"
             );
 
-            app.manage(app::LogGuard(guard)); // keeps logging alive
             let conn = db::open(&paths.db_file())?;
             tracing::info!(db = %paths.db_file().display(), "database ready");
-            app.manage(db::Database(std::sync::Mutex::new(conn)));
-            app.manage(paths);
+            app.manage(app::AppState::new(paths, conn, guard));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![commands::search,
+            commands::add_source,
+            commands::list_sources,
+            commands::get_index_status,])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

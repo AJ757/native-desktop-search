@@ -6,14 +6,36 @@
 
 use std::path::Path;
 
+use std::sync::Mutex;
+use rusqlite::Connection;
+use crate::config::AppPaths;
+
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{Builder, Rotation};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use crate::error::{AppError, Result};
 
-/// Holds the logging worker alive. If this is dropped, file logging stops silently.
-pub struct LogGuard(pub WorkerGuard);
+pub struct AppState {
+    pub paths: AppPaths,
+    db: Mutex<Connection>,
+    _log_guard: WorkerGuard, // keeps file logging alive; never read
+}
+
+impl AppState {
+    pub fn new(paths: AppPaths, conn: Connection, log_guard: WorkerGuard) -> Self {
+        Self { paths, db: Mutex::new(conn), _log_guard: log_guard }
+    }
+
+    /// Run a closure with the database connection locked.
+    pub fn with_db<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        let conn = self
+            .db
+            .lock()
+            .map_err(|_| AppError::Other("database lock poisoned".into()))?;
+        f(&conn)
+    }
+}
 
 pub fn init_logging(logs_dir: &Path) -> Result<WorkerGuard> {
     let appender = Builder::new()
