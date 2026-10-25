@@ -42,6 +42,17 @@ pub enum SourceStatus {
     Error,
 }
 
+impl SourceStatus {
+    /// Value stored in `sources.status`. Must equal the serde form.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Syncing => "syncing",
+            Self::Error => "error",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -187,6 +198,18 @@ mod tests {
         ] {
             let json = serde_json::to_string(&kind).unwrap();
             assert_eq!(json, format!("\"{}\"", kind.as_str()));
+        }
+    }
+
+    #[test]
+    fn source_status_as_str_matches_serde() {
+        for status in [
+            SourceStatus::Idle,
+            SourceStatus::Syncing,
+            SourceStatus::Error,
+        ] {
+            let json = serde_json::to_string(&status).unwrap();
+            assert_eq!(json, format!("\"{}\"", status.as_str()));
         }
     }
 

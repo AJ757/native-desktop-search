@@ -11,14 +11,15 @@ use rusqlite_migration::{Migrations, M};
 
 use serde::de::DeserializeOwned;
 
-use crate::types::{AddSourceRequest, Source};
+use crate::types::{AddSourceRequest, Source, SourceStatus};
 
-use crate::error::Result;
+use crate::error::{AppError, Result};
 
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(include_str!("../migrations/001_init.sql")),
-        // 002 goes here later; never edit an applied migration.
+        M::up(include_str!("../migrations/002_seen_at.sql")),
+        // Add new migrations at the end; never edit an applied migration.
     ])
 }
 
@@ -87,6 +88,135 @@ pub fn insert_source(conn: &Connection, req: &AddSourceRequest) -> Result<Source
     into_source(raw)
 }
 
+pub fn get_source(conn: &Connection, id: i64) -> Result<Source> {
+    let raw = conn
+        .query_row(
+            "SELECT id, kind, config, status FROM sources WHERE id = ?1",
+            [id],
+            raw_source,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => AppError::NotFound(format!("source {id}")),
+            other => other.into(),
+        })?;
+    into_source(raw)
+}
+
+/// Deletes a source. Its documents, chunks and sync state go with it (cascade).
+pub fn delete_source(conn: &Connection, id: i64) -> Result<()> {
+    let n = conn.execute("DELETE FROM sources WHERE id = ?1", [id])?;
+    if n == 0 {
+        return Err(AppError::NotFound(format!("source {id}")));
+    }
+    Ok(())
+}
+
+pub fn set_source_status(conn: &Connection, id: i64, status: SourceStatus) -> Result<()> {
+    conn.execute(
+        "UPDATE sources SET status = ?2 WHERE id = ?1",
+        params![id, status.as_str()],
+    )?;
+    Ok(())
+}
+
+/// Exclusion patterns for one source, including the global ones (source_id NULL).
+pub fn list_exclusion_patterns(conn: &Connection, source_id: i64) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT pattern FROM exclusions WHERE source_id IS NULL OR source_id = ?1 ORDER BY id",
+    )?;
+    let patterns = stmt
+        .query_map([source_id], |r| r.get(0))?
+        .collect::<std::result::Result<Vec<String>, _>>()?;
+    Ok(patterns)
+}
+
+/// What a source knows about one item, ready to store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentUpsert<'a> {
+    pub external_id: &'a str,
+    pub title: &'a str,
+    pub mime: Option<&'a str>,
+    pub modified_at: Option<i64>,
+}
+
+/// Inserts or refreshes a document and stamps it as seen at `seen_at`.
+///
+/// If the document is new, was deleted, or its modification time changed,
+/// `indexed_at` and `content_hash` are cleared so the indexer picks it up
+/// again. An unchanged document keeps them.
+pub fn upsert_document(
+    conn: &Connection,
+    source_id: i64,
+    doc: &DocumentUpsert,
+    seen_at: i64,
+) -> Result<()> {
+    // In an UPDATE, SQLite evaluates every right-hand side against the old row,
+    // so the CASE expressions compare the old modified_at with the new one.
+    conn.execute(
+        "INSERT INTO documents (source_id, external_id, title, mime, modified_at, seen_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT (source_id, external_id) DO UPDATE SET
+             indexed_at   = CASE WHEN deleted = 0 AND modified_at IS excluded.modified_at
+                                 THEN indexed_at ELSE NULL END,
+             content_hash = CASE WHEN deleted = 0 AND modified_at IS excluded.modified_at
+                                 THEN content_hash ELSE NULL END,
+             title        = excluded.title,
+             mime         = excluded.mime,
+             modified_at  = excluded.modified_at,
+             seen_at      = excluded.seen_at,
+             deleted      = 0",
+        params![
+            source_id,
+            doc.external_id,
+            doc.title,
+            doc.mime,
+            doc.modified_at,
+            seen_at
+        ],
+    )?;
+    Ok(())
+}
+
+/// Marks `path` and everything below it as deleted, so removing or renaming
+/// a whole folder is a single call. `indexed_at` is kept: a deleted row that
+/// is still indexed tells the indexer to remove it from the index.
+pub fn mark_deleted_under(
+    conn: &Connection,
+    source_id: i64,
+    path: &str,
+    separator: char,
+) -> Result<usize> {
+    let prefix = format!("{path}{separator}");
+    let n = conn.execute(
+        "UPDATE documents SET deleted = 1
+         WHERE source_id = ?1 AND deleted = 0
+           AND (external_id = ?2 OR substr(external_id, 1, length(?3)) = ?3)",
+        params![source_id, path, prefix],
+    )?;
+    Ok(n)
+}
+
+/// After a full crawl that began at `crawl_started_at`, marks every live
+/// document the crawl did not see as deleted.
+pub fn sweep_unseen(conn: &Connection, source_id: i64, crawl_started_at: i64) -> Result<usize> {
+    let n = conn.execute(
+        "UPDATE documents SET deleted = 1
+         WHERE source_id = ?1 AND deleted = 0 AND (seen_at IS NULL OR seen_at < ?2)",
+        params![source_id, crawl_started_at],
+    )?;
+    Ok(n)
+}
+
+/// Number of live (not deleted) documents across all sources.
+pub fn count_documents(conn: &Connection) -> Result<u32> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM documents WHERE deleted = 0",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,10 +260,10 @@ mod tests {
     #[test]
     fn running_migrations_twice_is_a_noop() {
         let mut conn = open_in_memory().unwrap();
-        let v1 = user_version(&conn);
+        let before = user_version(&conn);
         migrations().to_latest(&mut conn).unwrap();
-        assert_eq!(user_version(&conn), v1);
-        assert_eq!(v1, 1);
+        assert_eq!(user_version(&conn), before);
+        assert_eq!(before, 2);
     }
 
     #[test]
@@ -191,5 +321,150 @@ mod tests {
         let all = list_sources(&conn).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].config["path"], "C:/notes");
+    }
+
+    // ---------- documents ----------
+
+    fn conn_with_source() -> Connection {
+        let conn = open_in_memory().unwrap();
+        conn.execute("INSERT INTO sources (id, kind) VALUES (1, 'local')", [])
+            .unwrap();
+        conn
+    }
+
+    fn doc(external_id: &str, modified_at: i64) -> DocumentUpsert<'_> {
+        DocumentUpsert {
+            external_id,
+            title: "title",
+            mime: Some("text/plain"),
+            modified_at: Some(modified_at),
+        }
+    }
+
+    /// (deleted, indexed_at, seen_at) for one document.
+    fn doc_state(conn: &Connection, external_id: &str) -> (bool, Option<i64>, Option<i64>) {
+        conn.query_row(
+            "SELECT deleted, indexed_at, seen_at FROM documents WHERE external_id = ?1",
+            [external_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    }
+
+    fn mark_indexed(conn: &Connection, external_id: &str) {
+        conn.execute(
+            "UPDATE documents SET indexed_at = 50 WHERE external_id = ?1",
+            [external_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn upsert_twice_keeps_one_row() {
+        let conn = conn_with_source();
+        upsert_document(&conn, 1, &doc("/a.txt", 10), 100).unwrap();
+        upsert_document(&conn, 1, &doc("/a.txt", 10), 200).unwrap();
+        assert_eq!(count_documents(&conn).unwrap(), 1);
+        assert_eq!(doc_state(&conn, "/a.txt").2, Some(200));
+    }
+
+    #[test]
+    fn unchanged_upsert_keeps_indexed_at() {
+        let conn = conn_with_source();
+        upsert_document(&conn, 1, &doc("/a.txt", 10), 100).unwrap();
+        mark_indexed(&conn, "/a.txt");
+        upsert_document(&conn, 1, &doc("/a.txt", 10), 200).unwrap();
+        assert_eq!(doc_state(&conn, "/a.txt").1, Some(50));
+    }
+
+    #[test]
+    fn modified_upsert_clears_indexed_at() {
+        let conn = conn_with_source();
+        upsert_document(&conn, 1, &doc("/a.txt", 10), 100).unwrap();
+        mark_indexed(&conn, "/a.txt");
+        upsert_document(&conn, 1, &doc("/a.txt", 11), 200).unwrap();
+        assert_eq!(doc_state(&conn, "/a.txt").1, None);
+    }
+
+    #[test]
+    fn upsert_revives_a_deleted_document() {
+        let conn = conn_with_source();
+        upsert_document(&conn, 1, &doc("/a.txt", 10), 100).unwrap();
+        mark_indexed(&conn, "/a.txt");
+        mark_deleted_under(&conn, 1, "/a.txt", '/').unwrap();
+        upsert_document(&conn, 1, &doc("/a.txt", 10), 200).unwrap();
+        let (deleted, indexed_at, _) = doc_state(&conn, "/a.txt");
+        assert!(!deleted);
+        assert_eq!(indexed_at, None, "revived file must be reindexed");
+    }
+
+    #[test]
+    fn delete_under_a_folder_covers_children_but_not_siblings() {
+        let conn = conn_with_source();
+        for p in ["/d/a.txt", "/d/sub/b.txt", "/d2/c.txt", "/d"] {
+            upsert_document(&conn, 1, &doc(p, 1), 1).unwrap();
+        }
+        let n = mark_deleted_under(&conn, 1, "/d", '/').unwrap();
+        assert_eq!(n, 3);
+        assert!(doc_state(&conn, "/d/sub/b.txt").0);
+        assert!(!doc_state(&conn, "/d2/c.txt").0, "/d2 only shares a prefix");
+    }
+
+    #[test]
+    fn delete_keeps_indexed_at_for_index_cleanup() {
+        let conn = conn_with_source();
+        upsert_document(&conn, 1, &doc("/a.txt", 10), 100).unwrap();
+        mark_indexed(&conn, "/a.txt");
+        mark_deleted_under(&conn, 1, "/a.txt", '/').unwrap();
+        assert_eq!(doc_state(&conn, "/a.txt"), (true, Some(50), Some(100)));
+        assert_eq!(count_documents(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn sweep_deletes_only_documents_the_crawl_missed() {
+        let conn = conn_with_source();
+        upsert_document(&conn, 1, &doc("/old.txt", 1), 100).unwrap();
+        upsert_document(&conn, 1, &doc("/kept.txt", 1), 100).unwrap();
+        // A new crawl starts at 200 and only finds kept.txt.
+        upsert_document(&conn, 1, &doc("/kept.txt", 1), 200).unwrap();
+        assert_eq!(sweep_unseen(&conn, 1, 200).unwrap(), 1);
+        assert!(doc_state(&conn, "/old.txt").0);
+        assert!(!doc_state(&conn, "/kept.txt").0);
+    }
+
+    // ---------- sources ----------
+
+    #[test]
+    fn source_status_round_trips() {
+        let conn = conn_with_source();
+        set_source_status(&conn, 1, SourceStatus::Syncing).unwrap();
+        assert_eq!(get_source(&conn, 1).unwrap().status, SourceStatus::Syncing);
+    }
+
+    #[test]
+    fn missing_source_is_not_found() {
+        let conn = open_in_memory().unwrap();
+        assert!(matches!(get_source(&conn, 9), Err(AppError::NotFound(_))));
+        assert!(matches!(
+            delete_source(&conn, 9),
+            Err(AppError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn exclusion_patterns_include_global_ones() {
+        let conn = conn_with_source();
+        conn.execute("INSERT INTO sources (id, kind) VALUES (2, 'local')", [])
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO exclusions (source_id, pattern) VALUES (NULL, '*.tmp');
+             INSERT INTO exclusions (source_id, pattern) VALUES (1, 'build');
+             INSERT INTO exclusions (source_id, pattern) VALUES (2, 'other');",
+        )
+        .unwrap();
+        assert_eq!(
+            list_exclusion_patterns(&conn, 1).unwrap(),
+            vec!["*.tmp".to_string(), "build".to_string()]
+        );
     }
 }
