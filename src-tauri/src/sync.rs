@@ -6,5 +6,9 @@
 use crate::types::IndexStatus;
 
 pub fn index_status() -> IndexStatus {
-    IndexStatus { total_documents: 0, queued: 0, is_indexing: false }
+    IndexStatus {
+        total_documents: 0,
+        queued: 0,
+        is_indexing: false,
+    }
 }

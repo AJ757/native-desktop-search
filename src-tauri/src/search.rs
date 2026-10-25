@@ -18,7 +18,11 @@ pub fn search(req: &SearchRequest) -> Result<SearchResponse> {
         modified_at: Some(1_700_000_000),
         score: 1.0,
     }];
-    Ok(SearchResponse { total: hits.len() as u32, hits, took_ms: 0 })
+    Ok(SearchResponse {
+        total: hits.len() as u32,
+        hits,
+        took_ms: 0,
+    })
 }
 
 #[cfg(test)]

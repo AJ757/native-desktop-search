@@ -5,8 +5,8 @@
 //! target (file path or URL), so the ingest pipeline treats all of them
 //! the same way.
 
-use async_trait::async_trait;
 use crate::error::Result;
+use async_trait::async_trait;
 
 #[async_trait]
 pub trait Source: Send + Sync {

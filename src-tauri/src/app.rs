@@ -6,9 +6,9 @@
 
 use std::path::Path;
 
-use std::sync::Mutex;
-use rusqlite::Connection;
 use crate::config::AppPaths;
+use rusqlite::Connection;
+use std::sync::Mutex;
 
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{Builder, Rotation};
@@ -24,7 +24,11 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(paths: AppPaths, conn: Connection, log_guard: WorkerGuard) -> Self {
-        Self { paths, db: Mutex::new(conn), _log_guard: log_guard }
+        Self {
+            paths,
+            db: Mutex::new(conn),
+            _log_guard: log_guard,
+        }
     }
 
     /// Run a closure with the database connection locked.
@@ -53,8 +57,8 @@ pub fn init_logging(logs_dir: &Path) -> Result<WorkerGuard> {
     } else {
         "info"
     };
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_filter));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
     // Console output in dev builds only.
     let console = cfg!(debug_assertions).then(|| fmt::layer().with_writer(std::io::stderr));

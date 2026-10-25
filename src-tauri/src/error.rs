@@ -12,10 +12,10 @@ pub enum AppError {
 
     #[error("migration error: {0}")]
     Migration(#[from] rusqlite_migration::Error),
-    
+
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
-    
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -49,7 +49,10 @@ mod tests {
     #[test]
     fn serializes_as_plain_message() {
         let err = AppError::NotFound("source 7".into());
-        assert_eq!(serde_json::to_string(&err).unwrap(), "\"not found: source 7\"");
+        assert_eq!(
+            serde_json::to_string(&err).unwrap(),
+            "\"not found: source 7\""
+        );
     }
 
     #[test]

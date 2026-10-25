@@ -172,7 +172,6 @@ pub struct IndexStatus {
     pub is_indexing: bool,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

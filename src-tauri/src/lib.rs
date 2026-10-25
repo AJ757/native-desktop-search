@@ -44,10 +44,12 @@ pub fn run() {
             app.manage(app::AppState::new(paths, conn, guard));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![commands::search,
+        .invoke_handler(tauri::generate_handler![
+            commands::search,
             commands::add_source,
             commands::list_sources,
-            commands::get_index_status,])
+            commands::get_index_status,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

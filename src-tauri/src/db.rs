@@ -16,7 +16,6 @@ use crate::types::{AddSourceRequest, Source};
 
 use crate::error::Result;
 
-
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(include_str!("../migrations/001_init.sql")),
@@ -34,7 +33,7 @@ fn configure(conn: &Connection) -> Result<()> {
 }
 
 fn prepare(mut conn: Connection) -> Result<Connection> {
-    configure(&conn)?;              // pragmas first, outside any migration transaction
+    configure(&conn)?; // pragmas first, outside any migration transaction
     migrations().to_latest(&mut conn)?;
     Ok(conn)
 }
@@ -104,7 +103,8 @@ mod tests {
     }
 
     fn user_version(conn: &Connection) -> i64 {
-        conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap()
+        conn.pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap()
     }
 
     #[test]
@@ -116,7 +116,14 @@ mod tests {
     fn creates_all_tables() {
         let conn = open_in_memory().unwrap();
         let tables = table_names(&conn);
-        for t in ["sources", "documents", "chunks", "sync_state", "exclusions", "settings"] {
+        for t in [
+            "sources",
+            "documents",
+            "chunks",
+            "sync_state",
+            "exclusions",
+            "settings",
+        ] {
             assert!(tables.contains(&t.to_string()), "missing table {t}");
         }
     }
@@ -133,11 +140,15 @@ mod tests {
     #[test]
     fn deleting_a_source_cascades() {
         let conn = open_in_memory().unwrap();
-        conn.execute("INSERT INTO sources (id, kind) VALUES (1, 'local')", []).unwrap();
+        conn.execute("INSERT INTO sources (id, kind) VALUES (1, 'local')", [])
+            .unwrap();
         conn.execute(
-            "INSERT INTO documents (source_id, external_id) VALUES (1, 'a.txt')", [],
-        ).unwrap();
-        conn.execute("DELETE FROM sources WHERE id = 1", []).unwrap();
+            "INSERT INTO documents (source_id, external_id) VALUES (1, 'a.txt')",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM sources WHERE id = 1", [])
+            .unwrap();
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
             .unwrap();
@@ -147,7 +158,8 @@ mod tests {
     #[test]
     fn document_upsert_key_is_unique() {
         let conn = open_in_memory().unwrap();
-        conn.execute("INSERT INTO sources (id, kind) VALUES (1, 'local')", []).unwrap();
+        conn.execute("INSERT INTO sources (id, kind) VALUES (1, 'local')", [])
+            .unwrap();
         let ins = "INSERT INTO documents (source_id, external_id, title) VALUES (1, 'a.txt', ?1)";
         conn.execute(ins, ["first"]).unwrap();
         assert!(conn.execute(ins, ["dup"]).is_err());
@@ -156,7 +168,8 @@ mod tests {
             "INSERT INTO documents (source_id, external_id, title) VALUES (1, 'a.txt', 'second')
              ON CONFLICT(source_id, external_id) DO UPDATE SET title = excluded.title",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let title: String = conn
             .query_row("SELECT title FROM documents", [], |r| r.get(0))
             .unwrap();
