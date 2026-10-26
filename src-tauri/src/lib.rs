@@ -6,6 +6,7 @@ pub mod embed;
 pub mod error;
 pub mod extract;
 pub mod index;
+pub mod indexer;
 pub mod search;
 pub mod sources;
 pub mod sync;
@@ -35,6 +36,7 @@ pub fn run() {
             );
 
             let conn = db::open(&paths.db_file())?;
+            let search_index = index::SearchIndex::open(paths.index_dir())?;
             tracing::info!(db = %paths.db_file().display(), "database ready");
 
             // Never index our own database, index and logs, even if the user
@@ -48,7 +50,7 @@ pub fn run() {
                 }
             }
 
-            app.manage(app::AppState::new(paths, conn, sync, guard));
+            app.manage(app::AppState::new(paths, conn, sync, search_index, guard));
 
             #[cfg(desktop)]
             register_hotkey(app)?;

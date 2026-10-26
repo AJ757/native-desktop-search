@@ -19,7 +19,7 @@ fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(include_str!("../migrations/001_init.sql")),
         M::up(include_str!("../migrations/002_seen_at.sql")),
-        // Add new migrations at the end; never edit an applied migration.
+        M::up(include_str!("../migrations/003_embeddings.sql")),
     ])
 }
 

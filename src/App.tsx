@@ -54,6 +54,7 @@ export default function App() {
   }, []);
 
   async function runSearch() {
+    console.log("Search button clicked");
     if (!query.trim()) return;
     setError(null);
     const request: SearchRequest = {

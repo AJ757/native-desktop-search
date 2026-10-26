@@ -326,7 +326,7 @@ mod tests {
             ids,
             vec![
                 path_key(&root.join("a.md")),
-                path_key(&root.join("sub/b.txt"))
+                path_key(&root.join("sub\\b.txt"))
             ]
         );
     }
