@@ -3,12 +3,7 @@ use std::{collections::HashMap, time::Instant};
 use crate::{
     app::AppState,
     error::Result,
-    types::{
-        SearchHit,
-        SearchMode,
-        SearchRequest,
-        SearchResponse,
-    },
+    types::{SearchHit, SearchMode, SearchRequest, SearchResponse},
 };
 struct StoredVector {
     document_id: i64,
