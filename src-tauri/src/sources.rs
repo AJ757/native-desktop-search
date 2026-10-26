@@ -323,13 +323,13 @@ mod tests {
 
         let ids = crawl_ids(&folder(root, &["build", "*.tmp"]));
 
-assert_eq!(
-    ids,
-    vec![
-        path_key(&root.join("a.md")),
-        path_key(&root.join("sub").join("b.txt")),
-    ]
-);
+        assert_eq!(
+            ids,
+            vec![
+                path_key(&root.join("a.md")),
+                path_key(&root.join("sub").join("b.txt")),
+            ]
+        );
     }
 
     #[test]
