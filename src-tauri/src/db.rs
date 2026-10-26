@@ -263,7 +263,7 @@ mod tests {
         let before = user_version(&conn);
         migrations().to_latest(&mut conn).unwrap();
         assert_eq!(user_version(&conn), before);
-        assert_eq!(before, 2);
+        assert_eq!(before, 3);
     }
 
     #[test]

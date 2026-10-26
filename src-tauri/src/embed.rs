@@ -70,14 +70,20 @@ pub fn vector_to_blob(vector: &[f32]) -> Vec<u8> {
 
 /// Deserialize a little-endian SQLite BLOB.
 pub fn blob_to_vector(bytes: &[u8]) -> Option<Vec<f32>> {
-    if bytes.is_empty() || bytes.len() % 4 != 0 {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
+        return None;
+    }
+
+    let (chunks, remainder) = bytes.as_chunks::<4>();
+
+    if !remainder.is_empty() {
         return None;
     }
 
     Some(
-        bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        chunks
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
             .collect(),
     )
 }
