@@ -23,6 +23,7 @@ pub const MAIN_WINDOW: &str = "main";
 
 pub struct AppState {
     pub paths: AppPaths,
+    pub index: crate::index::SearchIndex,
     db: Mutex<Connection>,
     pub sync: SyncService,
     _log_guard: WorkerGuard, // keeps file logging alive; never read
@@ -33,9 +34,11 @@ impl AppState {
         paths: AppPaths,
         conn: Connection,
         sync: SyncService,
+        index: crate::index::SearchIndex,
         log_guard: WorkerGuard,
     ) -> Self {
         Self {
+            index,
             paths,
             db: Mutex::new(conn),
             sync,

@@ -19,7 +19,7 @@ fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(include_str!("../migrations/001_init.sql")),
         M::up(include_str!("../migrations/002_seen_at.sql")),
-        // Add new migrations at the end; never edit an applied migration.
+        M::up(include_str!("../migrations/003_embeddings.sql")),
     ])
 }
 
@@ -263,7 +263,7 @@ mod tests {
         let before = user_version(&conn);
         migrations().to_latest(&mut conn).unwrap();
         assert_eq!(user_version(&conn), before);
-        assert_eq!(before, 2);
+        assert_eq!(before, 3);
     }
 
     #[test]

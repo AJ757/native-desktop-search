@@ -6,7 +6,17 @@ import type { SearchResponse } from "./bindings/SearchResponse";
 import type { Source } from "./bindings/Source";
 
 export const api = {
-  search: (request: SearchRequest) => invoke<SearchResponse>("search", { request }),
+  search: async (request: SearchRequest) => {
+    console.log("Sending search request:", request);
+    try {
+      const result = await invoke<SearchResponse>("search", { request });
+      console.log("Search response:", result);
+      return result;
+    } catch (error) {
+      console.error("Search failed:", error);
+      throw error;
+    }
+  },
   addSource: (request: AddSourceRequest) => invoke<Source>("add_source", { request }),
   removeSource: (id: number) => invoke<void>("remove_source", { id }),
   listSources: () => invoke<Source[]>("list_sources"),

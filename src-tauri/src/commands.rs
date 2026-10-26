@@ -9,11 +9,15 @@ use crate::app::AppState;
 use crate::db;
 use crate::error::{AppError, Result};
 use crate::sources;
-use crate::types::{AddSourceRequest, IndexStatus, SearchRequest, SearchResponse, Source};
+use crate::types::{AddSourceRequest, IndexStatus, Source};
 
-#[tauri::command(async)]
-pub fn search(request: SearchRequest) -> Result<SearchResponse> {
-    crate::search::search(&request)
+#[tauri::command]
+pub fn search(
+    state: tauri::State<'_, crate::app::AppState>,
+    request: crate::types::SearchRequest,
+) -> crate::error::Result<crate::types::SearchResponse> {
+    crate::indexer::rebuild(&state)?;
+    crate::search::search(&state, &request)
 }
 
 /// Adds a source and starts syncing it. Folder sources must point at an
