@@ -17,6 +17,20 @@ const STATUS_STYLE: Record<SourceStatus, string> = {
 };
 
 function sourceLabel(source: Source): string {
+  if (source.kind === "one_drive") {
+    const acc =
+      (source.config["account_name"] as string) || (source.config["account_id"] as string);
+    return `OneDrive: ${acc || "Connected"}`;
+  }
+  if (source.kind === "notion") {
+    const ws =
+      (source.config["workspace_name"] as string) || (source.config["workspace_id"] as string);
+    return `Notion: ${ws || "Connected"}`;
+  }
+  if (source.kind === "obsidian") {
+    const path = source.config["path"];
+    return `Obsidian: ${typeof path === "string" ? path : "Vault"}`;
+  }
   const path = source.config["path"];
   return typeof path === "string" ? path : source.kind;
 }
@@ -77,6 +91,32 @@ export default function App() {
       const path = await open({ directory: true, multiple: false, title: "Choose a folder" });
       if (typeof path !== "string") return; // cancelled
       await api.addSource({ kind: "local", config: { path } });
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function addObsidianVault() {
+    setError(null);
+    try {
+      const path = await open({
+        directory: true,
+        multiple: false,
+        title: "Choose Obsidian Vault folder",
+      });
+      if (typeof path !== "string") return;
+      await api.addSource({ kind: "obsidian", config: { path } });
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function connectOAuth(provider: "microsoft" | "notion") {
+    setError(null);
+    try {
+      await api.startOAuthLogin(provider);
       await refresh();
     } catch (e) {
       setError(String(e));
@@ -146,14 +186,34 @@ export default function App() {
       )}
 
       <section className="flex flex-col gap-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="font-semibold">Sources</h2>
-          <button
-            onClick={() => void addFolder()}
-            className="rounded-lg border border-neutral-300 px-3 py-1 text-sm hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
-          >
-            Add folder
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => void addFolder()}
+              className="rounded-lg border border-neutral-300 px-3 py-1 text-sm hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
+            >
+              + Folder
+            </button>
+            <button
+              onClick={() => void addObsidianVault()}
+              className="rounded-lg border border-purple-300 px-3 py-1 text-sm text-purple-700 hover:bg-purple-50 dark:border-purple-700 dark:text-purple-300 dark:hover:bg-purple-950/30"
+            >
+              + Obsidian Vault
+            </button>
+            <button
+              onClick={() => void connectOAuth("microsoft")}
+              className="rounded-lg border border-blue-300 px-3 py-1 text-sm text-blue-700 hover:bg-blue-50 dark:border-blue-700 dark:text-blue-300 dark:hover:bg-blue-950/30"
+            >
+              + OneDrive / M365
+            </button>
+            <button
+              onClick={() => void connectOAuth("notion")}
+              className="rounded-lg border border-neutral-400 px-3 py-1 text-sm text-neutral-800 hover:bg-neutral-100 dark:border-neutral-600 dark:text-neutral-200 dark:hover:bg-neutral-800"
+            >
+              + Notion
+            </button>
+          </div>
         </div>
 
         {sources.length === 0 ? (

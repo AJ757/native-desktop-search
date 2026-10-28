@@ -236,7 +236,7 @@ pub fn path_key(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn file_event(path: &Path, meta: &std::fs::Metadata) -> Option<SourceEvent> {
+pub fn file_event(path: &Path, meta: &std::fs::Metadata) -> Option<SourceEvent> {
     let title = path.file_name()?.to_string_lossy().into_owned();
     let modified_at = meta
         .modified()

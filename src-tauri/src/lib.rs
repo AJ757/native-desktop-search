@@ -1,6 +1,8 @@
 pub mod app;
+pub mod auth;
 pub mod commands;
 pub mod config;
+pub mod connectors;
 pub mod db;
 pub mod embed;
 pub mod error;
@@ -62,6 +64,7 @@ pub fn run() {
             commands::remove_source,
             commands::list_sources,
             commands::get_index_status,
+            commands::start_oauth_login,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
