@@ -57,18 +57,25 @@ impl Extractor for TextExtractor {
 
         let text = match extension.as_str() {
             "pdf" => {
-                let poppler =
-                    std::env::var("LOCALAPPDATA").map_err(|e| io::Error::other(e.to_string()))?;
-
-                let executable = Path::new(&poppler)
-                    .join("Microsoft")
-                    .join("WinGet")
-                    .join("Packages")
-                    .join("oschwartz10612.Poppler_Microsoft.Winget.Source_8wekyb3d8bbwe")
-                    .join("poppler-25.07.0")
-                    .join("Library")
-                    .join("bin")
-                    .join("pdftotext.exe");
+                let executable: std::path::PathBuf = if cfg!(windows) {
+                    std::env::var("LOCALAPPDATA")
+                        .map(|base| {
+                            Path::new(&base)
+                                .join("Microsoft")
+                                .join("WinGet")
+                                .join("Packages")
+                                .join(
+                                    "oschwartz10612.Poppler_Microsoft.Winget.Source_8wekyb3d8bbwe",
+                                )
+                                .join("poppler-25.07.0")
+                                .join("Library")
+                                .join("bin")
+                                .join("pdftotext.exe")
+                        })
+                        .unwrap_or_else(|_| "pdftotext.exe".into())
+                } else {
+                    "pdftotext".into()
+                };
 
                 let output = std::process::Command::new(executable)
                     .arg("-enc")

@@ -77,6 +77,13 @@ pub fn get_index_status(state: State<'_, AppState>) -> Result<IndexStatus> {
     Ok(state.sync.status(total))
 }
 
+/// Shows the folder holding a search result: the file manager for local
+/// files, the provider's web page for cloud files.
+#[tauri::command(async)]
+pub async fn open_location(state: State<'_, AppState>, document_id: i64) -> Result<()> {
+    crate::reveal::open_location(&state, document_id).await
+}
+
 #[tauri::command(async)]
 pub async fn start_oauth_login(
     state: State<'_, AppState>,
@@ -85,6 +92,7 @@ pub async fn start_oauth_login(
     let oauth_provider = match provider.to_ascii_lowercase().as_str() {
         "microsoft" | "onedrive" | "microsoft365" => crate::auth::oauth::OAuthProvider::Microsoft,
         "notion" => crate::auth::oauth::OAuthProvider::Notion,
+        "google" | "google_drive" | "googledrive" => crate::auth::oauth::OAuthProvider::Google,
         other => return Err(AppError::Other(format!("Unknown OAuth provider: {other}"))),
     };
 
@@ -92,7 +100,8 @@ pub async fn start_oauth_login(
 
     let kind = oauth_provider.as_source_kind();
     let config = match oauth_provider {
-        crate::auth::oauth::OAuthProvider::Microsoft => serde_json::json!({
+        crate::auth::oauth::OAuthProvider::Microsoft
+        | crate::auth::oauth::OAuthProvider::Google => serde_json::json!({
             "account_id": success.account_id,
             "account_name": success.account_name,
         }),

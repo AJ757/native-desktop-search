@@ -432,6 +432,16 @@ fn perform_single_cloud_sync(
                 let connector = crate::connectors::OneDriveConnector::new(account_id.to_string());
                 connector.fetch_changes(current_cursor.as_deref()).await
             }
+            crate::types::SourceKind::GoogleDrive => {
+                let account_id = source
+                    .config
+                    .get("account_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("default");
+                let connector =
+                    crate::connectors::GoogleDriveConnector::new(account_id.to_string());
+                connector.fetch_changes(current_cursor.as_deref()).await
+            }
             crate::types::SourceKind::Notion => {
                 let workspace_id = source
                     .config

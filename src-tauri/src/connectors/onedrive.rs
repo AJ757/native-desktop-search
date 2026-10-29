@@ -75,6 +75,56 @@ impl OneDriveConnector {
         Ok(tokens.access_token)
     }
 
+    /// Web URL of the OneDrive folder holding an item, falling back to the
+    /// item's own page when it has no parent (the drive root).
+    pub async fn folder_url(&self, item_id: &str) -> Result<String> {
+        #[derive(Deserialize)]
+        struct Item {
+            #[serde(rename = "webUrl")]
+            web_url: Option<String>,
+            #[serde(rename = "parentReference")]
+            parent_reference: Option<ParentReference>,
+        }
+        #[derive(Deserialize)]
+        struct ParentReference {
+            id: Option<String>,
+        }
+
+        let token = self.access_token()?;
+        let client = reqwest::Client::new();
+        let get_item = |id: String| {
+            let request = client
+                .get(format!("{}/v1.0/me/drive/items/{id}", self.base_url))
+                .bearer_auth(&token)
+                .query(&[("$select", "webUrl,parentReference")]);
+            async move {
+                let resp = request
+                    .send()
+                    .await
+                    .map_err(|e| AppError::Other(format!("OneDrive request failed: {e}")))?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    return Err(AppError::Other(format!(
+                        "OneDrive Graph API error ({status}): {text}"
+                    )));
+                }
+                resp.json::<Item>()
+                    .await
+                    .map_err(|e| AppError::Other(format!("Invalid Graph API JSON response: {e}")))
+            }
+        };
+
+        let item = get_item(item_id.to_string()).await?;
+        if let Some(parent_id) = item.parent_reference.and_then(|p| p.id) {
+            if let Some(url) = get_item(parent_id).await?.web_url {
+                return Ok(url);
+            }
+        }
+        item.web_url
+            .ok_or_else(|| AppError::NotFound(format!("web link for OneDrive item {item_id}")))
+    }
+
     /// Fetches changes using the stored delta cursor (if present) or performs initial crawl.
     pub async fn fetch_changes(&self, cursor: Option<&str>) -> Result<CloudSyncResult> {
         let token = self.access_token()?;

@@ -66,6 +66,7 @@ jobs:
         env:
           KEYRING_MOCK: "1"
           MICROSOFT_API_BASE_URL: http://127.0.0.1:8080/graph
+          GOOGLE_API_BASE_URL: http://127.0.0.1:8080/google
           NOTION_API_BASE_URL: http://127.0.0.1:8080/notion
           OAUTH_LOOPBACK_PORT: "53682"
 

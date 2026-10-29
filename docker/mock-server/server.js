@@ -1,4 +1,4 @@
-// Docker mock server for cloud connectors (Microsoft 365, OneDrive, Notion)
+// Docker mock server for cloud connectors (Microsoft 365, OneDrive, Google Drive, Notion)
 // Zero external dependencies - runs on standard Node.js http module.
 
 const http = require("http");
@@ -149,7 +149,103 @@ const server = http.createServer((req, res) => {
     );
   }
 
-  // 4. Notion OAuth & API Endpoints (Base URL /notion)
+  // 4. Google OAuth & Drive API Endpoints (Base URL /google)
+  if (pathname === "/google/o/oauth2/v2/auth") {
+    const redirectUri = parsedUrl.query.redirect_uri || "http://127.0.0.1:53682/callback";
+    const state = parsedUrl.query.state || "state123";
+    res.writeHead(302, { Location: `${redirectUri}?code=mock_auth_code_google&state=${state}` });
+    return res.end();
+  }
+
+  if (pathname === "/google/token" && method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      console.log("[MockServer] Google OAuth Token requested with body:", body);
+      return sendJson(200, {
+        access_token: "mock_google_access_token_12345",
+        refresh_token: "mock_google_refresh_token_67890",
+        expires_in: 3599,
+        token_type: "Bearer",
+        scope: "https://www.googleapis.com/auth/drive.readonly",
+      });
+    });
+    return;
+  }
+
+  if (pathname === "/google/drive/v3/about" && method === "GET") {
+    return sendJson(200, {
+      user: { permissionId: "google-user-001", emailAddress: "engineer@gmail.com" },
+    });
+  }
+
+  if (pathname === "/google/drive/v3/changes/startPageToken" && method === "GET") {
+    return sendJson(200, { startPageToken: "start_1" });
+  }
+
+  // Initial crawl: two files plus a folder the connector should skip
+  if (pathname === "/google/drive/v3/files" && method === "GET") {
+    return sendJson(200, {
+      files: [
+        {
+          id: "gdrive_file_1",
+          name: "Terraform_Modules.md",
+          mimeType: "text/markdown",
+          modifiedTime: "2026-10-25T12:00:00.000Z",
+        },
+        {
+          id: "gdrive_file_2",
+          name: "Release_Checklist",
+          mimeType: "application/vnd.google-apps.document",
+          modifiedTime: "2026-10-26T14:30:00.000Z",
+        },
+        {
+          id: "gdrive_folder_1",
+          name: "Infra",
+          mimeType: "application/vnd.google-apps.folder",
+        },
+      ],
+    });
+  }
+
+  // Incremental sync: 1 modified file, 1 removed file
+  if (pathname === "/google/drive/v3/changes" && method === "GET") {
+    if (parsedUrl.query.pageToken === "start_1") {
+      return sendJson(200, {
+        newStartPageToken: "start_2",
+        changes: [
+          {
+            fileId: "gdrive_file_1",
+            removed: false,
+            file: {
+              id: "gdrive_file_1",
+              name: "Terraform_Modules.md",
+              mimeType: "text/markdown",
+              modifiedTime: "2026-10-28T09:15:00.000Z",
+            },
+          },
+          { fileId: "gdrive_file_2", removed: true },
+        ],
+      });
+    }
+    return sendJson(200, { newStartPageToken: parsedUrl.query.pageToken, changes: [] });
+  }
+
+  // File content: Google Docs are exported, other files downloaded with alt=media
+  const exportMatch = pathname.match(/^\/google\/drive\/v3\/files\/([^/]+)\/export$/);
+  if (exportMatch && method === "GET") {
+    return sendText(200, `Exported text of Google Doc ${exportMatch[1]}: release checklist.`);
+  }
+  const mediaMatch = pathname.match(/^\/google\/drive\/v3\/files\/([^/]+)$/);
+  if (mediaMatch && method === "GET" && parsedUrl.query.alt === "media") {
+    return sendText(200, `# Content for ${mediaMatch[1]}\nTerraform module layout and naming.`);
+  }
+  // File metadata: the parent folder, used to open a result's Drive folder
+  if (mediaMatch && method === "GET") {
+    return sendJson(200, { parents: ["gdrive_folder_1"] });
+  }
+
+  // 5. Notion OAuth & API Endpoints (Base URL /notion)
   if (pathname === "/notion/v1/oauth/token" && method === "POST") {
     let body = "";
     req.on("data", (chunk) => (body += chunk));

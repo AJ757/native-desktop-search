@@ -1,10 +1,10 @@
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::app::AppState;
-use crate::error::Result;
-use crate::extract::Extractor;
+use crate::error::{AppError, Result};
+use crate::extract::{ExtractedDocument, Extractor};
 use crate::index::IndexedDocument;
 
 struct DocumentRow {
@@ -13,11 +13,12 @@ struct DocumentRow {
     path: String,
     title: String,
     modified_at: Option<i64>,
+    mime: Option<String>,
 }
 
 fn load_documents(conn: &Connection) -> Result<Vec<DocumentRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, source_id, external_id, title, modified_at
+        "SELECT id, source_id, external_id, title, modified_at, mime
          FROM documents
          WHERE deleted = 0
          ORDER BY id",
@@ -30,6 +31,7 @@ fn load_documents(conn: &Connection) -> Result<Vec<DocumentRow>> {
             path: row.get(2)?,
             title: row.get(3)?,
             modified_at: row.get(4)?,
+            mime: row.get(5)?,
         })
     })?;
 
@@ -40,6 +42,72 @@ fn load_documents(conn: &Connection) -> Result<Vec<DocumentRow>> {
     }
 
     Ok(documents)
+}
+
+/// Text for a Google Drive document. Text saved by an earlier rebuild is
+/// reused unless Drive reports a newer modification, so searches don't
+/// download every file again. Files with no usable text are indexed by title.
+fn google_drive_text(
+    state: &AppState,
+    document: &DocumentRow,
+    file_id: &str,
+) -> Result<ExtractedDocument> {
+    let cached: Option<String> = state.with_db(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT content FROM document_embeddings
+                 WHERE document_id = ?1 AND updated_at >= COALESCE(?2, 0)",
+                rusqlite::params![document.id, document.modified_at],
+                |row| row.get(0),
+            )
+            .optional()?)
+    })?;
+
+    let text = match cached {
+        Some(text) => text,
+        None => {
+            let source = state.with_db(|conn| crate::db::get_source(conn, document.source_id))?;
+            let account_id = source
+                .config
+                .get("account_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("default")
+                .to_string();
+            let connector = crate::connectors::GoogleDriveConnector::new(account_id);
+            let (file_id, title, mime) =
+                (file_id, document.title.as_str(), document.mime.as_deref());
+            block_on(async move { connector.download_text(file_id, title, mime).await })??
+        }
+    };
+
+    Ok(ExtractedDocument {
+        title: document.title.clone(),
+        text: if text.trim().is_empty() {
+            document.title.clone()
+        } else {
+            text
+        },
+    })
+}
+
+/// Runs a future to completion on a separate thread with its own runtime,
+/// so it works whether or not the caller is already inside a Tokio runtime.
+fn block_on<F>(future: F) -> Result<F::Output>
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()?;
+                Ok(runtime.block_on(future))
+            })
+            .join()
+            .map_err(|_| AppError::Internal("download thread panicked".into()))?
+    })
 }
 
 pub fn rebuild(state: &AppState) -> Result<()> {
@@ -72,65 +140,82 @@ pub fn rebuild(state: &AppState) -> Result<()> {
             "CHECK 3: PROCESSING DOCUMENT"
         );
 
-        let path = Path::new(&document.path);
+        // Google Drive documents are downloaded instead of read from disk.
+        let extracted = if let Some(file_id) = document.path.strip_prefix("gdrive:") {
+            match google_drive_text(state, &document, file_id) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::error!(
+                        path = %document.path,
+                        error = %error,
+                        "CHECK FAILED: GOOGLE DRIVE DOWNLOAD ERROR"
+                    );
 
-        // 4. Check whether the file exists.
-        if !path.is_file() {
-            tracing::warn!(
-                path = %path.display(),
-                "CHECK FAILED: FILE DOES NOT EXIST"
-            );
+                    skipped_count += 1;
+                    continue;
+                }
+            }
+        } else {
+            let path = Path::new(&document.path);
 
-            skipped_count += 1;
-            continue;
-        }
-
-        tracing::info!(
-            path = %path.display(),
-            "CHECK 4: FILE EXISTS"
-        );
-
-        // 5. Check whether the extractor supports the extension.
-        if !crate::extract::TextExtractor.supports(path) {
-            tracing::warn!(
-                path = %path.display(),
-                extension = ?path.extension(),
-                "CHECK FAILED: UNSUPPORTED FILE EXTENSION"
-            );
-
-            skipped_count += 1;
-            continue;
-        }
-
-        tracing::info!(
-            path = %path.display(),
-            "CHECK 5: FILE EXTENSION SUPPORTED"
-        );
-
-        // 6. Extract text.
-        tracing::info!(
-            path = %path.display(),
-            "CHECK 6: STARTING TEXT EXTRACTION"
-        );
-
-        let extracted = match crate::extract::extract(path) {
-            Ok(value) => value,
-            Err(error) => {
-                tracing::error!(
+            // 4. Check whether the file exists.
+            if !path.is_file() {
+                tracing::warn!(
                     path = %path.display(),
-                    error = %error,
-                    "CHECK FAILED: TEXT EXTRACTION ERROR"
+                    "CHECK FAILED: FILE DOES NOT EXIST"
                 );
 
                 skipped_count += 1;
                 continue;
+            }
+
+            tracing::info!(
+                path = %path.display(),
+                "CHECK 4: FILE EXISTS"
+            );
+
+            // 5. Check whether the extractor supports the extension.
+            if !crate::extract::TextExtractor.supports(path) {
+                tracing::warn!(
+                    path = %path.display(),
+                    extension = ?path.extension(),
+                    "CHECK FAILED: UNSUPPORTED FILE EXTENSION"
+                );
+
+                skipped_count += 1;
+                continue;
+            }
+
+            tracing::info!(
+                path = %path.display(),
+                "CHECK 5: FILE EXTENSION SUPPORTED"
+            );
+
+            // 6. Extract text.
+            tracing::info!(
+                path = %path.display(),
+                "CHECK 6: STARTING TEXT EXTRACTION"
+            );
+
+            match crate::extract::extract(path) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::error!(
+                        path = %path.display(),
+                        error = %error,
+                        "CHECK FAILED: TEXT EXTRACTION ERROR"
+                    );
+
+                    skipped_count += 1;
+                    continue;
+                }
             }
         };
 
         extraction_count += 1;
 
         tracing::info!(
-            path = %path.display(),
+            path = %document.path,
             extracted_chars = extracted.text.chars().count(),
             extracted_title = %extracted.title,
             "CHECK 7: TEXT EXTRACTION COMPLETED"
@@ -139,7 +224,7 @@ pub fn rebuild(state: &AppState) -> Result<()> {
         // 7. Check extracted text.
         if extracted.text.trim().is_empty() {
             tracing::warn!(
-                path = %path.display(),
+                path = %document.path,
                 "CHECK FAILED: EXTRACTED TEXT IS EMPTY"
             );
 

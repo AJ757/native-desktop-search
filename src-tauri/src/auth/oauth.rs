@@ -23,6 +23,7 @@ pub const DEFAULT_LOOPBACK_PORT: u16 = 53682;
 pub enum OAuthProvider {
     Microsoft,
     Notion,
+    Google,
 }
 
 impl OAuthProvider {
@@ -30,8 +31,31 @@ impl OAuthProvider {
         match self {
             Self::Microsoft => SourceKind::OneDrive,
             Self::Notion => SourceKind::Notion,
+            Self::Google => SourceKind::GoogleDrive,
         }
     }
+}
+
+const GOOGLE_SCOPES: &str = "https://www.googleapis.com/auth/drive.readonly";
+
+/// Reads a Google OAuth credential from the environment. Without a mock
+/// server configured, a missing or blank value is an error rather than a
+/// placeholder, since Google would reject it with an unhelpful page.
+fn google_credential(name: &str, mock_value: &str) -> Result<String> {
+    match std::env::var(name).ok().filter(|v| !v.trim().is_empty()) {
+        Some(value) => Ok(value),
+        None if google_mock_base().is_some() => Ok(mock_value.into()),
+        None => Err(AppError::Config(format!(
+            "{name} is not set. Add it to the .env file in the project root."
+        ))),
+    }
+}
+
+/// Mock server base URL for Google endpoints, if one is configured.
+fn google_mock_base() -> Option<String> {
+    std::env::var("GOOGLE_API_BASE_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +170,7 @@ pub async fn run_oauth_flow(provider: OAuthProvider) -> Result<OAuthSuccess> {
     let service_key = match provider {
         OAuthProvider::Microsoft => format!("microsoft:{account_id}"),
         OAuthProvider::Notion => format!("notion:{account_id}"),
+        OAuthProvider::Google => format!("google:{account_id}"),
     };
 
     keychain::save_tokens(SERVICE_NAME, &service_key, &tokens)?;
@@ -196,6 +221,24 @@ pub fn build_auth_url(
             Ok(format!(
                 "{base_url}?client_id={client_id}&response_type=code&owner=user&redirect_uri={redirect_uri}&state={state}",
                 state = csrf_state.secret()
+            ))
+        }
+        OAuthProvider::Google => {
+            let client_id = google_credential("GOOGLE_CLIENT_ID", "mock_google_client_id")?;
+
+            let base_url = match google_mock_base() {
+                Some(mock_base) => format!("{mock_base}/o/oauth2/v2/auth"),
+                None => "https://accounts.google.com/o/oauth2/v2/auth".into(),
+            };
+
+            // access_type=offline + prompt=consent makes Google return a refresh token.
+            Ok(format!(
+                "{base_url}?client_id={client_id}&response_type=code&redirect_uri={redirect_uri}&scope={scope}&state={state}&code_challenge={challenge}&code_challenge_method=S256&access_type=offline&prompt=consent",
+                client_id = form_encode(&client_id),
+                redirect_uri = form_encode(redirect_uri),
+                scope = form_encode(GOOGLE_SCOPES),
+                state = csrf_state.secret(),
+                challenge = pkce_challenge.as_str()
             ))
         }
     }
@@ -457,7 +500,176 @@ pub async fn exchange_code(
                 account_email: data.workspace_name,
             })
         }
+        OAuthProvider::Google => {
+            let client_id = google_credential("GOOGLE_CLIENT_ID", "mock_google_client_id")?;
+            let client_secret =
+                google_credential("GOOGLE_CLIENT_SECRET", "mock_google_client_secret")?;
+
+            let token_url = match google_mock_base() {
+                Some(mock_base) => format!("{mock_base}/token"),
+                None => "https://oauth2.googleapis.com/token".into(),
+            };
+
+            // Google requires the client secret even for desktop apps using PKCE.
+            let params = [
+                ("client_id", client_id.as_str()),
+                ("client_secret", client_secret.as_str()),
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                ("redirect_uri", redirect_uri),
+                ("code_verifier", pkce_verifier.secret().as_str()),
+            ];
+
+            let body_str = params
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, form_encode(v)))
+                .collect::<Vec<_>>()
+                .join("&");
+
+            let resp = client
+                .post(&token_url)
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(body_str)
+                .send()
+                .await
+                .map_err(|e| AppError::Other(format!("Google token request failed: {e}")))?;
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(AppError::Other(format!(
+                    "Google token exchange failed ({status}): {text}"
+                )));
+            }
+
+            #[derive(Deserialize)]
+            struct GoogleTokenResponse {
+                access_token: String,
+                refresh_token: Option<String>,
+                expires_in: Option<i64>,
+            }
+
+            let data: GoogleTokenResponse = resp
+                .json()
+                .await
+                .map_err(|e| AppError::Other(format!("Invalid Google token JSON: {e}")))?;
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+
+            // The Drive "about" endpoint identifies the account without extra scopes.
+            #[derive(Deserialize)]
+            struct About {
+                user: Option<AboutUser>,
+            }
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct AboutUser {
+                permission_id: Option<String>,
+                email_address: Option<String>,
+            }
+
+            let about_url = format!(
+                "{}/drive/v3/about",
+                crate::connectors::google_drive::api_base_url()
+            );
+            let user = match client
+                .get(&about_url)
+                .bearer_auth(&data.access_token)
+                .query(&[("fields", "user(permissionId,emailAddress)")])
+                .send()
+                .await
+            {
+                Ok(resp) => resp.json::<About>().await.ok().and_then(|a| a.user),
+                Err(_) => None,
+            };
+            let (account_id, email) = match user {
+                Some(u) => (
+                    u.permission_id.unwrap_or_else(|| "google_account".into()),
+                    u.email_address,
+                ),
+                None => ("google_account".into(), None),
+            };
+
+            Ok(AuthTokens {
+                access_token: data.access_token,
+                refresh_token: data.refresh_token,
+                expires_at: data.expires_in.map(|secs| now + secs),
+                account_id,
+                account_email: email,
+            })
+        }
     }
+}
+
+/// Exchanges a stored Google refresh token for a new access token. Google
+/// usually omits the refresh token from this response, so the old one is kept.
+pub async fn refresh_google_tokens(tokens: &AuthTokens) -> Result<AuthTokens> {
+    let refresh_token = tokens
+        .refresh_token
+        .as_deref()
+        .ok_or_else(|| AppError::Other("No Google refresh token stored; reconnect".into()))?;
+    let client_id = google_credential("GOOGLE_CLIENT_ID", "mock_google_client_id")?;
+    let client_secret = google_credential("GOOGLE_CLIENT_SECRET", "mock_google_client_secret")?;
+
+    let token_url = match google_mock_base() {
+        Some(mock_base) => format!("{mock_base}/token"),
+        None => "https://oauth2.googleapis.com/token".into(),
+    };
+
+    let body_str = [
+        ("client_id", client_id.as_str()),
+        ("client_secret", client_secret.as_str()),
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token),
+    ]
+    .iter()
+    .map(|(k, v)| format!("{}={}", k, form_encode(v)))
+    .collect::<Vec<_>>()
+    .join("&");
+
+    let resp = reqwest::Client::new()
+        .post(&token_url)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body_str)
+        .send()
+        .await
+        .map_err(|e| AppError::Other(format!("Google token refresh failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(AppError::Other(format!(
+            "Google token refresh failed ({status}): {text}. Reconnect Google Drive."
+        )));
+    }
+
+    #[derive(Deserialize)]
+    struct RefreshResponse {
+        access_token: String,
+        refresh_token: Option<String>,
+        expires_in: Option<i64>,
+    }
+
+    let data: RefreshResponse = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Other(format!("Invalid Google token JSON: {e}")))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    Ok(AuthTokens {
+        access_token: data.access_token,
+        refresh_token: data.refresh_token.or_else(|| tokens.refresh_token.clone()),
+        expires_at: data.expires_in.map(|secs| now + secs),
+        account_id: tokens.account_id.clone(),
+        account_email: tokens.account_email.clone(),
+    })
 }
 
 #[cfg(test)]
@@ -497,5 +709,27 @@ mod tests {
         .unwrap();
         assert!(notion_url.contains("client_id="));
         assert!(notion_url.contains(state.secret()));
+    }
+
+    #[tokio::test]
+    async fn google_auth_url_and_token_exchange_with_mock_server() {
+        if std::env::var("GOOGLE_API_BASE_URL").is_err() {
+            return;
+        }
+        let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
+        let state = CsrfToken::new_random();
+        let redirect = "http://127.0.0.1:53682/callback";
+
+        let url = build_auth_url(OAuthProvider::Google, redirect, &state, &challenge).unwrap();
+        assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A53682%2Fcallback"));
+        assert!(url.contains("access_type=offline"));
+        assert!(url.contains(state.secret()));
+
+        let tokens = exchange_code(OAuthProvider::Google, "mock_code", &verifier, redirect)
+            .await
+            .unwrap();
+        assert_eq!(tokens.account_id, "google-user-001");
+        assert_eq!(tokens.account_email.as_deref(), Some("engineer@gmail.com"));
+        assert!(tokens.refresh_token.is_some());
     }
 }

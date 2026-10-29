@@ -2,7 +2,7 @@ use std::{path::Path, sync::Mutex, time::Instant};
 
 use tantivy::{
     collector::{Count, TopDocs},
-    query::QueryParser,
+    query::{BooleanQuery, Occur, Query, QueryParser, RegexQuery},
     schema::{Field, Schema, Value, STORED, STRING, TEXT},
     Index, IndexReader, IndexWriter, TantivyDocument,
 };
@@ -161,11 +161,7 @@ impl SearchIndex {
 
         let searcher = self.reader.searcher();
 
-        let parser = QueryParser::for_index(&self.index, vec![self.title, self.content]);
-
-        // Use the original query for now.
-        // This avoids invalid prefix/fuzzy query syntax.
-        let query = parser.parse_query(query_text)?;
+        let query = self.build_query(query_text)?;
 
         let top_docs = searcher.search(&query, &TopDocs::with_limit(limit).order_by_score())?;
 
@@ -214,6 +210,41 @@ impl SearchIndex {
 
         Ok((hits, total as u32, took_ms))
     }
+
+    /// Every query word must match the start of a word in the title or
+    /// content, so "lec" finds "lecture". Whole-word matches of the original
+    /// query are added as optional clauses so they still rank first.
+    fn build_query(&self, query_text: &str) -> Result<Box<dyn Query>> {
+        // Split the query the same way indexed text is split (lowercased words).
+        let mut analyzer = self.index.tokenizer_for_field(self.title)?;
+        let mut words = Vec::new();
+        let mut stream = analyzer.token_stream(query_text);
+        while stream.advance() {
+            words.push(stream.token().text.clone());
+        }
+
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+
+        for word in &words {
+            let pattern = format!("{}.*", regex::escape(word));
+            let mut per_field: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+            for field in [self.title, self.content] {
+                let prefix = RegexQuery::from_pattern(&pattern, field)?;
+                per_field.push((Occur::Should, Box::new(prefix)));
+            }
+            clauses.push((Occur::Must, Box::new(BooleanQuery::new(per_field))));
+        }
+
+        let parser = QueryParser::for_index(&self.index, vec![self.title, self.content]);
+        let (exact, _errors) = parser.parse_query_lenient(query_text);
+
+        if clauses.is_empty() {
+            return Ok(exact);
+        }
+
+        clauses.push((Occur::Should, exact));
+        Ok(Box::new(BooleanQuery::new(clauses)))
+    }
 }
 
 #[cfg(test)]
@@ -244,5 +275,33 @@ mod tests {
         assert_eq!(total, 1);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].document_id, 1);
+    }
+
+    #[test]
+    fn partial_words_match_as_prefixes() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let index = SearchIndex::open(temp.path().join("index")).unwrap();
+
+        index
+            .upsert(&IndexedDocument {
+                document_id: 1,
+                source_id: 1,
+                title: "lecture_3.pdf".into(),
+                content: "Continuous integration pipelines".into(),
+                location: "/notes/lecture_3.pdf".into(),
+                modified_at: Some(100),
+            })
+            .unwrap();
+
+        index.commit().unwrap();
+
+        for query in ["Lec", "l", "LECTURE", "lec pipe", "contin"] {
+            let (hits, _, _) = index.search(query, 10).unwrap();
+            assert_eq!(hits.len(), 1, "query {query:?} should match");
+        }
+
+        let (hits, _, _) = index.search("xyz", 10).unwrap();
+        assert!(hits.is_empty());
     }
 }

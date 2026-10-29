@@ -22,7 +22,8 @@ export const api = {
   removeSource: (id: number) => invoke<void>("remove_source", { id }),
   listSources: () => invoke<Source[]>("list_sources"),
   getIndexStatus: () => invoke<IndexStatus>("get_index_status"),
-  startOAuthLogin: (provider: "microsoft" | "notion") =>
+  openLocation: (documentId: number) => invoke<void>("open_location", { documentId }),
+  startOAuthLogin: (provider: "microsoft" | "notion" | "google") =>
     invoke<OAuthLoginResult>("start_oauth_login", { provider }),
 };
 

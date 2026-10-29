@@ -9,6 +9,7 @@ pub mod error;
 pub mod extract;
 pub mod index;
 pub mod indexer;
+pub mod reveal;
 pub mod search;
 pub mod sources;
 pub mod sync;
@@ -20,6 +21,7 @@ use crate::config::AppPaths;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _ = dotenvy::from_filename("../.env").or_else(|_| dotenvy::dotenv());
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -65,6 +67,7 @@ pub fn run() {
             commands::list_sources,
             commands::get_index_status,
             commands::start_oauth_login,
+            commands::open_location,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
