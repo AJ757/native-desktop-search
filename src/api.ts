@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AddSourceRequest } from "./bindings/AddSourceRequest";
 import type { IndexStatus } from "./bindings/IndexStatus";
+import type { OAuthLoginResult } from "./bindings/OAuthLoginResult";
 import type { SearchRequest } from "./bindings/SearchRequest";
 import type { SearchResponse } from "./bindings/SearchResponse";
 import type { Source } from "./bindings/Source";
@@ -21,6 +22,9 @@ export const api = {
   removeSource: (id: number) => invoke<void>("remove_source", { id }),
   listSources: () => invoke<Source[]>("list_sources"),
   getIndexStatus: () => invoke<IndexStatus>("get_index_status"),
+  openLocation: (documentId: number) => invoke<void>("open_location", { documentId }),
+  startOAuthLogin: (provider: "microsoft" | "notion" | "google") =>
+    invoke<OAuthLoginResult>("start_oauth_login", { provider }),
 };
 
 export type Api = typeof api; // Track C can implement a mock of this type

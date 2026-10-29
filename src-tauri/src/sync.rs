@@ -25,7 +25,7 @@ use rusqlite::Connection;
 
 use crate::db::{self, DocumentUpsert};
 use crate::error::{AppError, Result};
-use crate::sources::{self, ExclusionFilter, LocalFolder, Source as _, SourceEvent};
+use crate::sources::{self, ExclusionFilter, LocalFolder, SourceEvent};
 use crate::types::{IndexStatus, Source, SourceStatus};
 
 /// How long the watcher waits for a burst of events (an editor saving,
@@ -45,6 +45,12 @@ pub enum SyncMsg {
     },
     /// A full crawl that began at `started_at` (Unix seconds) finished.
     CrawlDone { source_id: i64, started_at: i64 },
+    /// Updates stored cursor for incremental sync.
+    CursorUpdate {
+        source_id: i64,
+        cursor: String,
+        synced_at: i64,
+    },
 }
 
 /// Handles shared by the service, crawl threads and watcher callbacks.
@@ -81,6 +87,7 @@ pub struct SyncService {
     running: Mutex<HashMap<i64, Running>>,
     /// Directories never indexed, such as the app's own data folder.
     excluded_roots: Vec<PathBuf>,
+    db_file: PathBuf,
 }
 
 impl SyncService {
@@ -103,20 +110,22 @@ impl SyncService {
             shared,
             running: Mutex::new(HashMap::new()),
             excluded_roots,
+            db_file: db_file.to_path_buf(),
         })
     }
 
-    /// Starts watching and crawling a source. Cloud sources are skipped
-    /// until their connectors exist. Restarting a running source is allowed.
+    /// Starts watching and crawling a source (local folder, Obsidian vault, or cloud connector).
+    /// Restarting a running source is allowed.
     pub fn start_source(&self, source: &Source, exclusion_patterns: &[String]) -> Result<()> {
-        if !sources::is_folder_kind(source.kind) {
-            tracing::debug!(
-                id = source.id,
-                kind = source.kind.as_str(),
-                "no connector yet"
-            );
-            return Ok(());
+        if sources::is_folder_kind(source.kind) {
+            self.start_folder_source(source, exclusion_patterns)?;
+        } else {
+            self.start_cloud_source(source)?;
         }
+        Ok(())
+    }
+
+    fn start_folder_source(&self, source: &Source, exclusion_patterns: &[String]) -> Result<()> {
         self.stop_source(source.id);
 
         let root = match sources::folder_root_from_config(&source.config) {
@@ -130,33 +139,68 @@ impl SyncService {
             }
         };
         let filter = ExclusionFilter::new(exclusion_patterns, self.excluded_roots.clone());
-        let folder = Arc::new(LocalFolder::new(source.kind, root, filter));
         let cancel = Arc::new(AtomicBool::new(false));
 
-        // Watch first, then crawl, so changes made during the crawl are seen.
-        let watcher = match watch_folder(source.id, &folder, &cancel, &self.shared) {
-            Ok(w) => Some(w),
-            Err(e) => {
-                // The crawl still runs; only live updates are missing.
-                // On Linux this is usually the inotify watch limit
-                // (fs.inotify.max_user_watches).
-                tracing::warn!(
-                    id = source.id,
-                    "live updates unavailable for this folder: {e}"
-                );
-                None
-            }
-        };
-        spawn_crawl(source.id, &folder, &cancel, &self.shared)?;
+        if source.kind == crate::types::SourceKind::Obsidian {
+            let vault = Arc::new(crate::connectors::ObsidianVault::new(
+                root.clone(),
+                filter.clone(),
+            )?);
+            let folder = Arc::new(LocalFolder::new(source.kind, root.clone(), filter));
+            let watcher = watch_folder(source.id, &folder, &cancel, &self.shared).ok();
+            spawn_crawl_generic(source.id, vault, &cancel, &self.shared)?;
+
+            self.lock_running()?.insert(
+                source.id,
+                Running {
+                    _watcher: watcher,
+                    cancel,
+                },
+            );
+        } else {
+            let folder = Arc::new(LocalFolder::new(source.kind, root.clone(), filter));
+            let watcher = watch_folder(source.id, &folder, &cancel, &self.shared).ok();
+            spawn_crawl(source.id, &folder, &cancel, &self.shared)?;
+
+            self.lock_running()?.insert(
+                source.id,
+                Running {
+                    _watcher: watcher,
+                    cancel,
+                },
+            );
+        }
+
+        tracing::info!(id = source.id, root = %root.display(), "watching folder");
+        Ok(())
+    }
+
+    fn start_cloud_source(&self, source: &Source) -> Result<()> {
+        self.stop_source(source.id);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_thread = Arc::clone(&cancel);
+        let shared = Arc::clone(&self.shared);
+        let source_clone = source.clone();
+        let db_file = self.db_file.clone();
+
+        std::thread::Builder::new()
+            .name(format!("cloud-sync-{}", source.id))
+            .spawn(move || {
+                run_cloud_sync_loop(source_clone, db_file, shared, cancel_thread);
+            })?;
 
         self.lock_running()?.insert(
             source.id,
             Running {
-                _watcher: watcher,
+                _watcher: None,
                 cancel,
             },
         );
-        tracing::info!(id = source.id, root = %folder.root().display(), "watching folder");
+        tracing::info!(
+            id = source.id,
+            kind = source.kind.as_str(),
+            "started cloud sync scheduler"
+        );
         Ok(())
     }
 
@@ -255,7 +299,16 @@ fn spawn_crawl(
     cancel: &Arc<AtomicBool>,
     shared: &Arc<Shared>,
 ) -> Result<()> {
-    let (folder, cancel, shared) = (Arc::clone(folder), Arc::clone(cancel), Arc::clone(shared));
+    spawn_crawl_generic(source_id, Arc::clone(folder), cancel, shared)
+}
+
+fn spawn_crawl_generic<S: crate::sources::Source + 'static>(
+    source_id: i64,
+    source: Arc<S>,
+    cancel: &Arc<AtomicBool>,
+    shared: &Arc<Shared>,
+) -> Result<()> {
+    let (source, cancel, shared) = (Arc::clone(&source), Arc::clone(cancel), Arc::clone(shared));
     shared.active_crawls.fetch_add(1, Ordering::Relaxed);
     shared.send(SyncMsg::Status {
         source_id,
@@ -267,7 +320,7 @@ fn spawn_crawl(
         .spawn(move || {
             let shared = thread_shared;
             let started_at = now_secs();
-            let result = folder.crawl(&cancel, &mut |events| {
+            let result = source.crawl(&cancel, &mut |events| {
                 shared.send(SyncMsg::Events { source_id, events })
             });
             match result {
@@ -297,6 +350,142 @@ fn spawn_crawl(
         return Err(e.into());
     }
     Ok(())
+}
+
+fn run_cloud_sync_loop(
+    source: Source,
+    db_file: PathBuf,
+    shared: Arc<Shared>,
+    cancel: Arc<AtomicBool>,
+) {
+    let interval = Duration::from_secs(
+        std::env::var("CLOUD_SYNC_INTERVAL_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(300),
+    );
+
+    // Initial sync immediately
+    if !perform_single_cloud_sync(&source, &db_file, &shared, &cancel) {
+        return;
+    }
+
+    while !cancel.load(Ordering::Relaxed) {
+        let ticks = (interval.as_millis() / 500).max(1);
+        for _ in 0..ticks {
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+
+        if !perform_single_cloud_sync(&source, &db_file, &shared, &cancel) {
+            break;
+        }
+    }
+}
+
+fn perform_single_cloud_sync(
+    source: &Source,
+    db_file: &Path,
+    shared: &Arc<Shared>,
+    cancel: &Arc<AtomicBool>,
+) -> bool {
+    if cancel.load(Ordering::Relaxed) {
+        return false;
+    }
+
+    shared.active_crawls.fetch_add(1, Ordering::Relaxed);
+    shared.send(SyncMsg::Status {
+        source_id: source.id,
+        status: SourceStatus::Syncing,
+    });
+
+    let current_cursor = db::open(db_file)
+        .ok()
+        .and_then(|c| db::get_sync_cursor(&c, source.id).unwrap_or(None));
+
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::error!("Could not create tokio runtime for cloud sync: {e}");
+            shared.send(SyncMsg::Status {
+                source_id: source.id,
+                status: SourceStatus::Error,
+            });
+            shared.active_crawls.fetch_sub(1, Ordering::Relaxed);
+            return false;
+        }
+    };
+
+    let result = rt.block_on(async {
+        match source.kind {
+            crate::types::SourceKind::OneDrive => {
+                let account_id = source
+                    .config
+                    .get("account_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("default");
+                let connector = crate::connectors::OneDriveConnector::new(account_id.to_string());
+                connector.fetch_changes(current_cursor.as_deref()).await
+            }
+            crate::types::SourceKind::GoogleDrive => {
+                let account_id = source
+                    .config
+                    .get("account_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("default");
+                let connector =
+                    crate::connectors::GoogleDriveConnector::new(account_id.to_string());
+                connector.fetch_changes(current_cursor.as_deref()).await
+            }
+            crate::types::SourceKind::Notion => {
+                let workspace_id = source
+                    .config
+                    .get("workspace_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("default");
+                let connector = crate::connectors::NotionConnector::new(workspace_id.to_string());
+                connector.fetch_changes(current_cursor.as_deref()).await
+            }
+            _ => Err(AppError::Other("Unsupported cloud source kind".into())),
+        }
+    });
+
+    match result {
+        Ok(cloud_result) => {
+            if let Some(new_cursor) = cloud_result.new_cursor {
+                shared.send(SyncMsg::CursorUpdate {
+                    source_id: source.id,
+                    cursor: new_cursor,
+                    synced_at: now_secs(),
+                });
+            }
+            if !cloud_result.events.is_empty() {
+                shared.send(SyncMsg::Events {
+                    source_id: source.id,
+                    events: cloud_result.events,
+                });
+            }
+            shared.send(SyncMsg::Status {
+                source_id: source.id,
+                status: SourceStatus::Idle,
+            });
+        }
+        Err(e) => {
+            tracing::error!(id = source.id, "Cloud sync failed: {e}");
+            shared.send(SyncMsg::Status {
+                source_id: source.id,
+                status: SourceStatus::Error,
+            });
+        }
+    }
+
+    shared.active_crawls.fetch_sub(1, Ordering::Relaxed);
+    true
 }
 
 fn run_worker(mut conn: Connection, rx: Receiver<SyncMsg>, shared: Arc<Shared>) {
@@ -358,6 +547,13 @@ pub fn apply(conn: &mut Connection, msg: SyncMsg) -> Result<()> {
         } => {
             let gone = db::sweep_unseen(conn, source_id, started_at)?;
             tracing::info!(source_id, removed = gone, "crawl finished");
+        }
+        SyncMsg::CursorUpdate {
+            source_id,
+            cursor,
+            synced_at,
+        } => {
+            db::set_sync_cursor(conn, source_id, &cursor, synced_at)?;
         }
     }
     Ok(())

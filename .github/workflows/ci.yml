@@ -52,7 +52,23 @@ jobs:
 
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+
+      - name: Build and run Docker mock server for cloud connectors
+        working-directory: .
+        run: |
+          docker build -t cloud-mock-server docker/mock-server
+          docker run -d -p 8080:8080 --name cloud-mock-server cloud-mock-server
+          sleep 2
+          curl --fail http://127.0.0.1:8080/health || exit 1
+
+      - name: Run Rust tests
+        run: cargo test
+        env:
+          KEYRING_MOCK: "1"
+          MICROSOFT_API_BASE_URL: http://127.0.0.1:8080/graph
+          GOOGLE_API_BASE_URL: http://127.0.0.1:8080/google
+          NOTION_API_BASE_URL: http://127.0.0.1:8080/notion
+          OAUTH_LOOPBACK_PORT: "53682"
 
       - name: Generated TS bindings are up to date
         working-directory: .

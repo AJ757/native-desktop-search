@@ -1,0 +1,9 @@
+{
+  "name": "cloud-connectors-mock-server",
+  "version": "1.0.0",
+  "description": "Mock server for Microsoft Graph and Notion APIs for CI testing",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

@@ -217,6 +217,51 @@ pub fn count_documents(conn: &Connection) -> Result<u32> {
     Ok(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
+/// Reads the sync cursor for a source, if any has been saved.
+pub fn get_sync_cursor(conn: &Connection, source_id: i64) -> Result<Option<String>> {
+    let mut stmt = conn.prepare("SELECT cursor FROM sync_state WHERE source_id = ?1")?;
+    let mut rows = stmt.query([source_id])?;
+    if let Some(row) = rows.next()? {
+        let cursor: Option<String> = row.get(0)?;
+        Ok(cursor)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Stores or updates the sync cursor and last_synced_at timestamp for a source.
+pub fn set_sync_cursor(
+    conn: &Connection,
+    source_id: i64,
+    cursor: &str,
+    last_synced_at: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO sync_state (source_id, cursor, last_synced_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT (source_id) DO UPDATE SET
+             cursor = excluded.cursor,
+             last_synced_at = excluded.last_synced_at",
+        params![source_id, cursor, last_synced_at],
+    )?;
+    Ok(())
+}
+
+/// Retrieves the cursor and last_synced_at timestamp for a source.
+pub fn get_sync_state(
+    conn: &Connection,
+    source_id: i64,
+) -> Result<Option<(Option<String>, Option<i64>)>> {
+    let mut stmt =
+        conn.prepare("SELECT cursor, last_synced_at FROM sync_state WHERE source_id = ?1")?;
+    let mut rows = stmt.query([source_id])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some((row.get(0)?, row.get(1)?)))
+    } else {
+        Ok(None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,5 +511,30 @@ mod tests {
             list_exclusion_patterns(&conn, 1).unwrap(),
             vec!["*.tmp".to_string(), "build".to_string()]
         );
+    }
+
+    #[test]
+    fn sync_cursor_round_trips_and_updates() {
+        let conn = conn_with_source();
+        assert_eq!(get_sync_cursor(&conn, 1).unwrap(), None);
+
+        set_sync_cursor(&conn, 1, "delta-token-1", 100).unwrap();
+        assert_eq!(
+            get_sync_cursor(&conn, 1).unwrap(),
+            Some("delta-token-1".to_string())
+        );
+        let state = get_sync_state(&conn, 1).unwrap().unwrap();
+        assert_eq!(state.0, Some("delta-token-1".to_string()));
+        assert_eq!(state.1, Some(100));
+
+        // Update cursor
+        set_sync_cursor(&conn, 1, "delta-token-2", 200).unwrap();
+        assert_eq!(
+            get_sync_cursor(&conn, 1).unwrap(),
+            Some("delta-token-2".to_string())
+        );
+        let updated = get_sync_state(&conn, 1).unwrap().unwrap();
+        assert_eq!(updated.0, Some("delta-token-2".to_string()));
+        assert_eq!(updated.1, Some(200));
     }
 }

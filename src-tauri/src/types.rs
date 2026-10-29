@@ -183,6 +183,16 @@ pub struct IndexStatus {
     pub is_indexing: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct OAuthLoginResult {
+    pub success: bool,
+    pub provider: String,
+    pub account_id: String,
+    pub account_name: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

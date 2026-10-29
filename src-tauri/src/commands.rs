@@ -76,3 +76,54 @@ pub fn get_index_status(state: State<'_, AppState>) -> Result<IndexStatus> {
     let total = state.with_db(db::count_documents)?;
     Ok(state.sync.status(total))
 }
+
+/// Shows the folder holding a search result: the file manager for local
+/// files, the provider's web page for cloud files.
+#[tauri::command(async)]
+pub async fn open_location(state: State<'_, AppState>, document_id: i64) -> Result<()> {
+    crate::reveal::open_location(&state, document_id).await
+}
+
+#[tauri::command(async)]
+pub async fn start_oauth_login(
+    state: State<'_, AppState>,
+    provider: String,
+) -> Result<crate::types::OAuthLoginResult> {
+    let oauth_provider = match provider.to_ascii_lowercase().as_str() {
+        "microsoft" | "onedrive" | "microsoft365" => crate::auth::oauth::OAuthProvider::Microsoft,
+        "notion" => crate::auth::oauth::OAuthProvider::Notion,
+        "google" | "google_drive" | "googledrive" => crate::auth::oauth::OAuthProvider::Google,
+        other => return Err(AppError::Other(format!("Unknown OAuth provider: {other}"))),
+    };
+
+    let success = crate::auth::oauth::run_oauth_flow(oauth_provider).await?;
+
+    let kind = oauth_provider.as_source_kind();
+    let config = match oauth_provider {
+        crate::auth::oauth::OAuthProvider::Microsoft
+        | crate::auth::oauth::OAuthProvider::Google => serde_json::json!({
+            "account_id": success.account_id,
+            "account_name": success.account_name,
+        }),
+        crate::auth::oauth::OAuthProvider::Notion => serde_json::json!({
+            "workspace_id": success.account_id,
+            "workspace_name": success.account_name,
+        }),
+    };
+
+    let add_req = AddSourceRequest { kind, config };
+    let (source, patterns) = state.with_db(|conn| {
+        let source = db::insert_source(conn, &add_req)?;
+        let patterns = db::list_exclusion_patterns(conn, source.id)?;
+        Ok((source, patterns))
+    })?;
+
+    state.sync.start_source(&source, &patterns)?;
+
+    Ok(crate::types::OAuthLoginResult {
+        success: true,
+        provider,
+        account_id: success.account_id,
+        account_name: success.account_name,
+    })
+}
