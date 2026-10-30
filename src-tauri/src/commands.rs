@@ -128,7 +128,6 @@ pub async fn start_oauth_login(
     })
 }
 
-
 /// Abandons a pending OAuth login so its loopback port is released.
 #[tauri::command]
 pub fn cancel_oauth_login() {

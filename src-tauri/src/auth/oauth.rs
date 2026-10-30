@@ -20,7 +20,6 @@ use crate::auth::keychain::{self, AuthTokens, SERVICE_NAME};
 use crate::error::{AppError, Result};
 use crate::types::SourceKind;
 
-
 /// How long to wait for the browser to redirect back before giving up.
 pub const OAUTH_TIMEOUT_SECS: u64 = 60;
 
@@ -197,7 +196,6 @@ pub async fn run_oauth_flow(provider: OAuthProvider) -> Result<OAuthSuccess> {
         _ = cancelled => return Err(AppError::Other("OAuth login cancelled".into())),
     };
     //
-
 
     // Exchange auth code for tokens
     let tokens = exchange_code(provider, &callback_res.code, &pkce_verifier, &redirect_uri).await?;
@@ -751,7 +749,6 @@ mod tests {
 
     //add a test
 
-
     #[tokio::test]
     async fn cancel_wakes_a_waiting_flow() {
         let waiter = tokio::spawn(async { CANCEL.notified().await });
@@ -785,5 +782,4 @@ mod tests {
         assert_eq!(tokens.account_email.as_deref(), Some("engineer@gmail.com"));
         assert!(tokens.refresh_token.is_some());
     }
-
 }
