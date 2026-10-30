@@ -31,7 +31,7 @@ jobs:
           cache: 'npm'
 
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install # reads rust-toolchain.toml from root/src-tauri
+        run: rustup toolchain install # reads rust-toolchain.toml
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
