@@ -508,10 +508,8 @@ export default function App() {
   const inputRef = useRef<HTMLInputElement>(null);
   const searchSeq = useRef(0);
 
-
   const inventoryOpen = sourcesOpen || sources.length === 0;
   const maxScore = hits.reduce((m, h) => Math.max(m, h.score), 0);
-
 
   const refresh = useCallback(async () => {
     try {
@@ -540,7 +538,6 @@ export default function App() {
   //
   const oauthPending = pending === "google" || pending === "microsoft" || pending === "notion";
   //
-
 
   async function runSearch(nextMode: SearchMode = mode, nextFilter: number[] = filterIds) {
     const q = query.trim();
@@ -584,8 +581,6 @@ export default function App() {
     } finally {
       if (seq === searchSeq.current) setBusy(false);
     }
-
-    
   }
 
   function changeMode(next: SearchMode) {
@@ -603,7 +598,7 @@ export default function App() {
   }
 
   function clearSearch() {
-    searchSeq.current++;//
+    searchSeq.current++; //
     setQuery("");
     setHits([]);
     setMeta(null);
@@ -629,7 +624,6 @@ export default function App() {
       //setError(String(e));
       // Stopping the wait on purpose isn't an error worth showing.
       if (!String(e).includes("OAuth login cancelled")) setError(String(e));
-
     } finally {
       setPending(null);
     }
@@ -874,7 +868,6 @@ export default function App() {
 
         {inventoryOpen && (
           <div id="sources-panel" className="flex flex-col gap-3 border-t-[3px] border-px-line p-3">
-          
             {/*<div className="flex flex-wrap gap-3">
               {adders.map((a) => (
                 <button
@@ -912,7 +905,6 @@ export default function App() {
                 );
               })}
             </div>
-
 
             {sources.length === 0 ? (
               <p className="text-sm text-px-dim">
