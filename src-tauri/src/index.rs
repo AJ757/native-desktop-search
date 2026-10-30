@@ -48,7 +48,9 @@ impl SearchIndex {
 
         let mut schema_builder = Schema::builder();
 
-        let document_id = schema_builder.add_i64_field("document_id", STORED);
+        // The ID is stored for result decoding and indexed for replace/delete terms.
+        let document_id =
+            schema_builder.add_i64_field("document_id", STORED | tantivy::schema::INDEXED);
 
         let source_id = schema_builder.add_i64_field("source_id", STORED);
 
