@@ -1,1 +1,365 @@
 @import "tailwindcss";
+
+@theme {
+  --font-pixel: "Press Start 2P", ui-monospace, monospace;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-px-void: #0f0e17;
+  --color-px-panel: #1a1925;
+  --color-px-panel-2: #232232;
+  --color-px-line: #3a384d;
+  --color-px-ink: #e8e6f2;
+  --color-px-dim: #8e8ba6;
+
+  --color-px-purple: #a970ff;
+  --color-px-purple-dark: #6b3fc0;
+  --color-px-green: #5cf08a;
+  --color-px-green-dark: #2a9e52;
+  --color-px-blue: #4cc4ff;
+  --color-px-blue-dark: #1f7fb8;
+  --color-px-steel: #9b99b0;
+  --color-px-steel-dark: #5c5a70;
+  --color-px-alert: #ff5c7a;
+  --color-px-alert-dark: #a3304a;
+}
+
+/* ---------- base ---------- */
+
+:root {
+  --px: 3px; /* size of one "pixel" in borders */
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-mono);
+  color: var(--color-px-ink);
+  background-color: var(--color-px-void);
+  background-image:
+    linear-gradient(rgb(255 255 255 / 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 0.025) 1px, transparent 1px);
+  background-size: 24px 24px;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--color-px-purple);
+  color: var(--color-px-void);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-px-void);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-px-purple-dark);
+  border: 2px solid var(--color-px-void);
+}
+
+/* ---------- tones: set --tone / --tone-dark, components read them ---------- */
+
+.tone-purple {
+  --tone: var(--color-px-purple);
+  --tone-dark: var(--color-px-purple-dark);
+}
+.tone-green {
+  --tone: var(--color-px-green);
+  --tone-dark: var(--color-px-green-dark);
+}
+.tone-blue {
+  --tone: var(--color-px-blue);
+  --tone-dark: var(--color-px-blue-dark);
+}
+.tone-grey {
+  --tone: var(--color-px-steel);
+  --tone-dark: var(--color-px-steel-dark);
+}
+.tone-alert {
+  --tone: var(--color-px-alert);
+  --tone-dark: var(--color-px-alert-dark);
+}
+
+/* ---------- pixel border: 4 hard shadows = border with notched corners ---------- */
+
+.px-box,
+.px-btn,
+.px-chip,
+.px-meter,
+.badge {
+  --px-c: var(--color-px-line);
+  --px-ring:
+    0 calc(-1 * var(--px)) 0 0 var(--px-c), 0 var(--px) 0 0 var(--px-c),
+    calc(-1 * var(--px)) 0 0 0 var(--px-c), var(--px) 0 0 0 var(--px-c);
+  box-shadow: var(--px-ring);
+}
+
+.px-box {
+  box-shadow:
+    var(--px-ring),
+    6px 6px 0 0 rgb(0 0 0 / 0.45);
+}
+.px-field:focus-within {
+  --px-c: var(--tone);
+}
+.px-box.is-alert {
+  --px-c: var(--color-px-alert);
+}
+
+/* ---------- buttons ---------- */
+
+.px-btn {
+  --px-c: var(--tone-dark);
+  font-family: var(--font-pixel);
+  font-size: 10px;
+  line-height: 1;
+  text-transform: uppercase;
+  padding: 12px 16px;
+  color: var(--color-px-void);
+  background: var(--tone);
+  cursor: pointer;
+  box-shadow:
+    var(--px-ring),
+    inset -3px -3px 0 0 var(--tone-dark),
+    inset 3px 3px 0 0 rgb(255 255 255 / 0.35);
+  transition:
+    transform 80ms steps(2),
+    filter 80ms steps(2);
+}
+.px-btn:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+.px-btn:active:not(:disabled) {
+  transform: translate(2px, 2px);
+  box-shadow:
+    var(--px-ring),
+    inset 3px 3px 0 0 var(--tone-dark);
+}
+.px-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.px-btn:focus-visible,
+.px-chip:focus-visible,
+.hit:focus-visible {
+  outline: 2px dashed var(--color-px-green);
+  outline-offset: 6px;
+}
+.px-btn--sm {
+  font-size: 8px;
+  padding: 8px 10px;
+}
+
+/* mode toggle chips */
+.px-chip {
+  font-family: var(--font-pixel);
+  font-size: 8px;
+  padding: 7px 9px;
+  color: var(--tone);
+  background: transparent;
+  cursor: pointer;
+}
+.px-chip:hover {
+  --px-c: var(--tone);
+}
+.px-chip.is-on {
+  --px-c: var(--tone-dark);
+  color: var(--color-px-void);
+  background: var(--tone);
+}
+
+/* source-kind tag */
+.badge {
+  --px-c: var(--tone-dark);
+  flex-shrink: 0;
+  font-family: var(--font-pixel);
+  font-size: 8px;
+  line-height: 1;
+  padding: 5px 6px;
+  color: var(--color-px-void);
+  background: var(--tone);
+}
+
+.status {
+  color: var(--tone);
+}
+
+/* ---------- result cards ---------- */
+
+.hit {
+  position: relative;
+  background: var(--color-px-panel);
+  cursor: pointer;
+  transition:
+    transform 120ms steps(3),
+    background-color 120ms steps(3);
+}
+.hit:hover,
+.hit.is-selected {
+  --px-c: var(--color-px-green);
+  background: var(--color-px-panel-2);
+  transform: translateX(4px);
+}
+.hit.is-selected::before {
+  content: "▶";
+  position: absolute;
+  left: -22px;
+  top: 50%;
+  translate: 0 -50%;
+  font-family: var(--font-pixel);
+  font-size: 10px;
+  color: var(--color-px-green);
+  animation: blink 0.8s steps(1) infinite;
+}
+
+/* relevance pips */
+.pips {
+  display: flex;
+  gap: 2px;
+}
+.pips > span {
+  width: 6px;
+  height: 10px;
+  background: var(--color-px-line);
+}
+.pips > span.on {
+  background: var(--color-px-green);
+}
+
+/* ---------- XP / sync meter ---------- */
+
+.px-meter {
+  height: 12px;
+  background: var(--color-px-void);
+}
+.px-meter-fill {
+  height: 100%;
+  background: var(--color-px-green);
+  transition: width 400ms steps(6);
+}
+.px-meter.is-busy .px-meter-fill {
+  width: 100% !important;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--color-px-blue) 0 8px,
+    var(--color-px-purple) 8px 16px
+  );
+  background-size: 32px 100%;
+  animation: march 0.8s steps(4) infinite;
+}
+
+/* ---------- text effects ---------- */
+
+.glow {
+  text-shadow:
+    0 0 8px color-mix(in srgb, currentColor 55%, transparent),
+    2px 2px 0 #000;
+}
+
+.dots::after {
+  content: "...";
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: bottom;
+  width: 0;
+  animation: dots 1.2s steps(4, jump-none) infinite;
+}
+
+/* ---------- CRT overlay ---------- */
+
+.crt::before,
+.crt::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+.crt::before {
+  z-index: 49;
+  background: radial-gradient(ellipse at center, transparent 60%, rgb(0 0 0 / 0.55) 100%);
+}
+.crt::after {
+  z-index: 50;
+  background: repeating-linear-gradient(to bottom, transparent 0 2px, rgb(0 0 0 / 0.22) 2px 3px);
+  animation: flicker 4s steps(2) infinite;
+}
+
+/* ---------- 8-bit animations (all stepped) ---------- */
+
+.blink {
+  animation: blink 1s steps(1) infinite;
+}
+.bob {
+  animation: bob 1.2s steps(1) infinite;
+}
+.shake {
+  animation: shake 300ms steps(4) 1;
+}
+.pop-in {
+  animation: pop-in 240ms steps(4) both;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+@keyframes bob {
+  50% {
+    transform: translateY(-3px);
+  }
+}
+@keyframes shake {
+  25% {
+    transform: translateX(-4px);
+  }
+  75% {
+    transform: translateX(4px);
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes march {
+  to {
+    background-position: 32px 0;
+  }
+}
+@keyframes dots {
+  to {
+    width: 3ch;
+  }
+}
+@keyframes flicker {
+  0%,
+  100% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

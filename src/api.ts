@@ -25,6 +25,8 @@ export const api = {
   openLocation: (documentId: number) => invoke<void>("open_location", { documentId }),
   startOAuthLogin: (provider: "microsoft" | "notion" | "google") =>
     invoke<OAuthLoginResult>("start_oauth_login", { provider }),
+  //
+  cancelOAuthLogin: () => invoke<void>("cancel_oauth_login"),
 };
 
 export type Api = typeof api; // Track C can implement a mock of this type
