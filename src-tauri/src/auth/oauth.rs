@@ -155,11 +155,11 @@ pub async fn run_oauth_flow(provider: OAuthProvider) -> Result<OAuthSuccess> {
 
     // Wait for redirect callback with timeout (120 seconds)
     let callback_res = tokio::time::timeout(
-        Duration::from_secs(120),
+        Duration::from_secs(60),
         handle_loopback_connection(listener, csrf_state.secret()),
     )
     .await
-    .map_err(|_| AppError::Other("OAuth callback timed out after 2 minutes".into()))??;
+    .map_err(|_| AppError::Other("OAuth callback timed out after 1 minute".into()))??;
 
     // Exchange auth code for tokens
     let tokens = exchange_code(provider, &callback_res.code, &pkce_verifier, &redirect_uri).await?;
