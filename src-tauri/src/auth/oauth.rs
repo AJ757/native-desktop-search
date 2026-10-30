@@ -7,6 +7,10 @@
 
 use std::time::Duration;
 
+//
+use std::sync::LazyLock;
+use tokio::sync::Notify;
+//
 use oauth2::{CsrfToken, PkceCodeChallenge, PkceCodeVerifier};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -15,6 +19,19 @@ use tokio::net::TcpListener;
 use crate::auth::keychain::{self, AuthTokens, SERVICE_NAME};
 use crate::error::{AppError, Result};
 use crate::types::SourceKind;
+
+
+/// How long to wait for the browser to redirect back before giving up.
+pub const OAUTH_TIMEOUT_SECS: u64 = 60;
+
+/// Wakes a flow that is waiting for its browser callback.
+static CANCEL: LazyLock<Notify> = LazyLock::new(Notify::new);
+
+/// Stops the OAuth flow that is waiting for its browser callback, if any.
+pub fn cancel_oauth_flow() {
+    CANCEL.notify_waiters();
+}
+//
 
 pub const DEFAULT_LOOPBACK_PORT: u16 = 53682;
 
@@ -134,6 +151,8 @@ pub async fn run_oauth_flow(provider: OAuthProvider) -> Result<OAuthSuccess> {
 
     let auth_url = build_auth_url(provider, &redirect_uri, &csrf_state, &pkce_challenge)?;
 
+    //
+
     tracing::info!(
         provider = ?provider,
         port,
@@ -154,12 +173,31 @@ pub async fn run_oauth_flow(provider: OAuthProvider) -> Result<OAuthSuccess> {
     }
 
     // Wait for redirect callback with timeout (120 seconds)
-    let callback_res = tokio::time::timeout(
+    /*let callback_res = tokio::time::timeout(
         Duration::from_secs(60),
         handle_loopback_connection(listener, csrf_state.secret()),
     )
     .await
     .map_err(|_| AppError::Other("OAuth callback timed out after 1 minute".into()))??;
+    */
+
+    //
+    // Wait for the redirect callback. The frontend cancels early when the
+    // user abandons the browser tab; otherwise give up after the timeout.
+    let cancelled = CANCEL.notified();
+    let callback_res = tokio::select! {
+        res = tokio::time::timeout(
+            Duration::from_secs(OAUTH_TIMEOUT_SECS),
+            handle_loopback_connection(listener, csrf_state.secret()),
+        ) => res.map_err(|_| {
+            AppError::Other(format!(
+                "OAuth callback timed out after {OAUTH_TIMEOUT_SECS} seconds"
+            ))
+        })??,
+        _ = cancelled => return Err(AppError::Other("OAuth login cancelled".into())),
+    };
+    //
+
 
     // Exchange auth code for tokens
     let tokens = exchange_code(provider, &callback_res.code, &pkce_verifier, &redirect_uri).await?;
@@ -711,6 +749,21 @@ mod tests {
         assert!(notion_url.contains(state.secret()));
     }
 
+    //add a test
+
+
+    #[tokio::test]
+    async fn cancel_wakes_a_waiting_flow() {
+        let waiter = tokio::spawn(async { CANCEL.notified().await });
+        tokio::task::yield_now().await;
+        cancel_oauth_flow();
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("cancel did not wake the waiter")
+            .unwrap();
+    }
+    //
+
     #[tokio::test]
     async fn google_auth_url_and_token_exchange_with_mock_server() {
         if std::env::var("GOOGLE_API_BASE_URL").is_err() {
@@ -732,4 +785,5 @@ mod tests {
         assert_eq!(tokens.account_email.as_deref(), Some("engineer@gmail.com"));
         assert!(tokens.refresh_token.is_some());
     }
+
 }

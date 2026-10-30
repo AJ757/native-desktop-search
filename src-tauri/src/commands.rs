@@ -127,3 +127,11 @@ pub async fn start_oauth_login(
         account_name: success.account_name,
     })
 }
+
+
+/// Abandons a pending OAuth login so its loopback port is released.
+#[tauri::command]
+pub fn cancel_oauth_login() {
+    crate::auth::oauth::cancel_oauth_flow();
+}
+//

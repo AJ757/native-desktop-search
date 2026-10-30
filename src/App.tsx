@@ -537,6 +537,11 @@ export default function App() {
     return () => window.removeEventListener("focus", focusInput);
   }, []);
 
+  //
+  const oauthPending = pending === "google" || pending === "microsoft" || pending === "notion";
+  //
+
+
   async function runSearch(nextMode: SearchMode = mode, nextFilter: number[] = filterIds) {
     const q = query.trim();
     if (!q) return;
@@ -621,7 +626,10 @@ export default function App() {
       await task();
       await refresh();
     } catch (e) {
-      setError(String(e));
+      //setError(String(e));
+      // Stopping the wait on purpose isn't an error worth showing.
+      if (!String(e).includes("OAuth login cancelled")) setError(String(e));
+
     } finally {
       setPending(null);
     }
@@ -866,7 +874,8 @@ export default function App() {
 
         {inventoryOpen && (
           <div id="sources-panel" className="flex flex-col gap-3 border-t-[3px] border-px-line p-3">
-            <div className="flex flex-wrap gap-3">
+          
+            {/*<div className="flex flex-wrap gap-3">
               {adders.map((a) => (
                 <button
                   key={a.id}
@@ -878,7 +887,32 @@ export default function App() {
                   {pending === a.id ? <span className="dots">Wait</span> : a.label}
                 </button>
               ))}
+            </div>*/}
+            <div className="flex flex-wrap gap-3">
+              {adders.map((a) => {
+                // The waiting OAuth button doubles as the stop button.
+                const stoppable = pending === a.id && oauthPending;
+                return (
+                  <button
+                    key={a.id}
+                    type="button"
+                    onClick={stoppable ? () => void api.cancelOAuthLogin() : a.run}
+                    disabled={pending !== null && !stoppable}
+                    title={stoppable ? "Stop waiting for the browser login" : undefined}
+                    className={`px-btn px-btn--sm ${stoppable ? "tone-alert" : `tone-${a.tone}`}`}
+                  >
+                    {stoppable ? (
+                      "■ Stop wait"
+                    ) : pending === a.id ? (
+                      <span className="dots">Wait</span>
+                    ) : (
+                      a.label
+                    )}
+                  </button>
+                );
+              })}
             </div>
+
 
             {sources.length === 0 ? (
               <p className="text-sm text-px-dim">

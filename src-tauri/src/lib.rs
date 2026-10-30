@@ -67,6 +67,9 @@ pub fn run() {
             commands::list_sources,
             commands::get_index_status,
             commands::start_oauth_login,
+            //add command
+            commands::cancel_oauth_login,
+            //
             commands::open_location,
         ])
         .run(tauri::generate_context!())
