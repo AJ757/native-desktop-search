@@ -3,7 +3,7 @@ name: "Publish Release"
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 jobs:
   release:
@@ -14,11 +14,11 @@ jobs:
       matrix:
         include:
           - platform: macos-latest
-            args: ''
+            args: ""
           - platform: windows-latest
-            args: ''
+            args: ""
           - platform: ubuntu-22.04
-            args: ''
+            args: ""
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -28,7 +28,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: 'npm'
+          cache: "npm"
 
       - name: Install pinned Rust toolchain
         run: rustup toolchain install # reads rust-toolchain.toml
@@ -56,8 +56,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           tagName: v__VERSION__
-          releaseName: 'Desktop Search App v__VERSION__'
-          releaseBody: 'Automated release for local and cloud desktop search client.'
+          releaseName: "Desktop Search App v__VERSION__"
+          releaseBody: "Automated release for local and cloud desktop search client."
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
