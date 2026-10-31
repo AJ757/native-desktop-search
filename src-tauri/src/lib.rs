@@ -31,6 +31,7 @@ pub fn run() {
             let root = app.path().app_local_data_dir()?;
             let paths = AppPaths::new(root);
             paths.ensure_dirs()?;
+            crate::embed::set_models_dir(paths.models_dir());
 
             let guard = app::init_logging(&paths.logs_dir())?;
             app::install_panic_hook();

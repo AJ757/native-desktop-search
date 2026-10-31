@@ -1,16 +1,24 @@
 //! Text embeddings for semantic search.
 //!
 //! Will wrap fastembed (model loading, batching, the embedding queue) and
-//! vector storage in sqlite-vec. Not implemented until Track A.
+//! vector storage in sqlite-vec.
 //! Local text embeddings for semantic search.
 
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 
 use crate::error::{AppError, Result};
 
+static MODELS_DIR: OnceLock<PathBuf> = OnceLock::new();
+
 static MODEL: OnceLock<Mutex<Option<TextEmbedding>>> = OnceLock::new();
+
+/// Call once at startup, before the first embedding.
+pub fn set_models_dir(dir: PathBuf) {
+    let _ = MODELS_DIR.set(dir);
+}
 
 fn with_model<T>(f: impl FnOnce(&mut TextEmbedding) -> Result<T>) -> Result<T> {
     let mutex = MODEL.get_or_init(|| Mutex::new(None));
@@ -22,7 +30,12 @@ fn with_model<T>(f: impl FnOnce(&mut TextEmbedding) -> Result<T>) -> Result<T> {
     if guard.is_none() {
         tracing::info!("Loading local embedding model");
 
-        let model = TextEmbedding::try_new(TextInitOptions::new(EmbeddingModel::AllMiniLML6V2))
+        let mut options = TextInitOptions::new(EmbeddingModel::AllMiniLML6V2);
+        if let Some(dir) = MODELS_DIR.get() {
+            options = options.with_cache_dir(dir.clone());
+        }
+
+        let model = TextEmbedding::try_new(options)
             .map_err(|e| AppError::Other(format!("Could not load embedding model: {e}")))?;
 
         *guard = Some(model);
