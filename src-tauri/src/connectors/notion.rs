@@ -11,6 +11,24 @@ use crate::connectors::onedrive::{parse_rfc3339_to_unix, CloudSyncResult};
 use crate::error::{AppError, Result};
 use crate::sources::SourceEvent;
 
+//add new imports
+
+use std::time::Duration;
+
+const NOTION_VERSION: &str = "2022-06-28";
+/// How many levels of nested blocks (toggles, columns, lists) to read.
+const MAX_BLOCK_DEPTH: usize = 4;
+/// Stop reading a page once this much text has been collected.
+const MAX_TEXT_BYTES: usize = 1_000_000;
+
+#[derive(Debug, Deserialize)]
+struct BlockList {
+    results: Vec<serde_json::Value>,
+    next_cursor: Option<String>,
+    #[serde(default)]
+    has_more: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct NotionConnector {
     workspace_id: String,
@@ -158,6 +176,167 @@ impl NotionConnector {
             .or_else(|| latest_edited_time.map(|t| t.to_string()));
 
         Ok(CloudSyncResult { events, new_cursor })
+    }
+
+    fn auth_headers(token: &str) -> Result<HeaderMap> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}"))
+                .map_err(|e| AppError::Other(e.to_string()))?,
+        );
+        headers.insert("Notion-Version", HeaderValue::from_static(NOTION_VERSION));
+        Ok(headers)
+    }
+
+    /// Lists the direct child blocks of a page or block, following pagination
+    /// and waiting out Notion's rate limit (HTTP 429).
+    async fn list_children(
+        &self,
+        client: &reqwest::Client,
+        token: &str,
+        block_id: &str,
+    ) -> Result<Vec<serde_json::Value>> {
+        let url = format!("{}/v1/blocks/{block_id}/children", self.base_url);
+        let mut blocks = Vec::new();
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let mut query: Vec<(&str, String)> = vec![("page_size", "100".into())];
+            if let Some(c) = &cursor {
+                query.push(("start_cursor", c.clone()));
+            }
+
+            let mut attempts = 0;
+            let resp = loop {
+                let resp = client
+                    .get(&url)
+                    .headers(Self::auth_headers(token)?)
+                    .query(&query)
+                    .send()
+                    .await
+                    .map_err(|e| AppError::Other(format!("Notion block request failed: {e}")))?;
+                if resp.status().as_u16() == 429 && attempts < 3 {
+                    let wait = resp
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(1)
+                        .min(30);
+                    tokio::time::sleep(Duration::from_secs(wait)).await;
+                    attempts += 1;
+                    continue;
+                }
+                break resp;
+            };
+
+            // Databases and some block types have no readable children.
+            if resp.status().as_u16() == 400 {
+                return Ok(blocks);
+            }
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(AppError::Other(format!(
+                    "Notion block API error ({status}): {text}"
+                )));
+            }
+
+            let page: BlockList = resp
+                .json()
+                .await
+                .map_err(|e| AppError::Other(format!("Invalid Notion block JSON: {e}")))?;
+            blocks.extend(page.results);
+
+            match (page.has_more, page.next_cursor) {
+                (true, Some(next)) => cursor = Some(next),
+                _ => break,
+            }
+        }
+        Ok(blocks)
+    }
+
+    /// Collects a page's text (paragraphs, headings, lists, to-dos, quotes,
+    /// table cells and so on) for indexing. `page_id` is the bare Notion ID,
+    /// without the `notion:` prefix.
+    pub async fn download_text(&self, page_id: &str) -> Result<String> {
+        let token = self.access_token()?;
+        let client = reqwest::Client::new();
+        let mut text = String::new();
+        let mut pending: Vec<(String, usize)> = vec![(page_id.to_string(), 0)];
+
+        while let Some((block_id, depth)) = pending.pop() {
+            for block in self.list_children(&client, &token, &block_id).await? {
+                let line = block_text(&block);
+                if !line.is_empty() {
+                    text.push_str(&line);
+                    text.push('\n');
+                }
+                if text.len() >= MAX_TEXT_BYTES {
+                    return Ok(text);
+                }
+
+                // Sub-pages are separate documents, so don't read into them here.
+                let kind = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                let has_children = block
+                    .get("has_children")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if has_children
+                    && depth < MAX_BLOCK_DEPTH
+                    && kind != "child_page"
+                    && kind != "child_database"
+                {
+                    if let Some(id) = block.get("id").and_then(|v| v.as_str()) {
+                        pending.push((id.to_string(), depth + 1));
+                    }
+                }
+            }
+        }
+        Ok(text)
+    }
+}
+
+//new functions
+
+fn plain_text(items: &[serde_json::Value]) -> String {
+    items
+        .iter()
+        .filter_map(|i| i.get("plain_text").and_then(|p| p.as_str()))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// Pulls the visible text out of one Notion block.
+fn block_text(block: &serde_json::Value) -> String {
+    let Some(kind) = block.get("type").and_then(|t| t.as_str()) else {
+        return String::new();
+    };
+    let Some(body) = block.get(kind) else {
+        return String::new();
+    };
+    if let Some(rich) = body.get("rich_text").and_then(|v| v.as_array()) {
+        return plain_text(rich);
+    }
+    match kind {
+        "child_page" | "child_database" => body
+            .get("title")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "table_row" => body
+            .get("cells")
+            .and_then(|c| c.as_array())
+            .map(|cells| {
+                cells
+                    .iter()
+                    .filter_map(|cell| cell.as_array().map(|c| plain_text(c)))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default(),
+        _ => String::new(),
     }
 }
 
