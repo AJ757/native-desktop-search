@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Native Desktop Search</title>
+    <style>
+      :root {
+        --bg: #fff;
+        --fg: #1a1a1a;
+        --muted: #666;
+        --card: #f4f4f5;
+        --accent: #2563eb;
+        --accent-fg: #fff;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #111214;
+          --fg: #ececec;
+          --muted: #9a9a9a;
+          --card: #1c1d20;
+          --accent: #3b82f6;
+        }
+      }
+      body {
+        margin: 0;
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      main {
+        max-width: 640px;
+        margin: 0 auto;
+        padding: 64px 20px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 2rem;
+      }
+      p.sub {
+        color: var(--muted);
+        margin: 0 0 32px;
+      }
+      .btns {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      a.btn {
+        background: var(--accent);
+        color: var(--accent-fg);
+        padding: 12px 20px;
+        border-radius: 8px;
+        text-decoration: none;
+        font-weight: 600;
+      }
+      a.btn.alt {
+        background: var(--card);
+        color: var(--fg);
+      }
+      .meta,
+      .note {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      details {
+        margin-top: 32px;
+        background: var(--card);
+        border-radius: 8px;
+        padding: 12px 16px;
+      }
+      li {
+        margin: 6px 0;
+      }
+      a {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Native Desktop Search</h1>
+      <p class="sub">
+        Fast local and cloud file search, keyword and semantic, running on your own machine.
+      </p>
+      <div id="primary" class="btns"><span class="meta">Loading latest release…</span></div>
+      <p id="meta" class="meta"></p>
+      <p id="note" class="note"></p>
+      <details>
+        <summary>All downloads</summary>
+        <ul id="all"></ul>
+      </details>
+    </main>
+    <script>
+      const REPO = "aj757/native-desktop-search";
+      const API = `https://api.github.com/repos/${REPO}/releases/latest`;
+      const RELEASES = `https://github.com/${REPO}/releases/latest`;
+
+      function detectOS() {
+        const p = (
+          navigator.userAgentData?.platform ||
+          navigator.platform ||
+          navigator.userAgent
+        ).toLowerCase();
+        if (p.includes("win")) return "windows";
+        if (p.includes("mac")) return "mac";
+        if (p.includes("linux") || p.includes("x11")) return "linux";
+        return "other";
+      }
+
+      async function getRelease() {
+        try {
+          const cached = sessionStorage.getItem("release");
+          if (cached) return JSON.parse(cached);
+        } catch {}
+        const res = await fetch(API, { headers: { Accept: "application/vnd.github+json" } });
+        if (!res.ok) throw new Error(res.status);
+        const rel = await res.json();
+        try {
+          sessionStorage.setItem("release", JSON.stringify(rel));
+        } catch {}
+        return rel;
+      }
+
+      const RULES = {
+        windows: [
+          { re: /-setup\.exe$/i, label: "Download for Windows (.exe)" },
+          { re: /\.msi$/i, label: "Windows (.msi)", alt: true },
+        ],
+        mac: [
+          { re: /aarch64\.dmg$/i, label: "macOS, Apple Silicon (.dmg)" },
+          { re: /x64\.dmg$/i, label: "macOS, Intel (.dmg)" },
+        ],
+        linux: [
+          { re: /\.AppImage$/i, label: "Linux (.AppImage, auto-updates)" },
+          { re: /\.deb$/i, label: "Linux (.deb)", alt: true },
+        ],
+      };
+      const NOTES = {
+        mac: "Builds are not Apple-notarized yet: right-click the app and choose Open the first time.",
+        windows:
+          "Windows SmartScreen may warn because the installer is unsigned: choose More info, then Run anyway.",
+        linux: "Make the AppImage executable (chmod +x) before running it.",
+      };
+
+      (async () => {
+        const primary = document.getElementById("primary");
+        try {
+          const rel = await getRelease();
+          const assets = rel.assets.filter(
+            (a) => !/\.(sig|json)$/i.test(a.name) && !/\.(tar\.gz|zip)$/i.test(a.name),
+          );
+          const os = detectOS();
+          primary.innerHTML = "";
+          for (const rule of RULES[os] || []) {
+            const asset = assets.find((a) => rule.re.test(a.name));
+            if (!asset) continue;
+            const a = Object.assign(document.createElement("a"), {
+              className: "btn" + (rule.alt ? " alt" : ""),
+              href: asset.browser_download_url,
+              textContent: rule.label,
+            });
+            primary.append(a);
+          }
+          if (!primary.children.length) {
+            primary.append(
+              Object.assign(document.createElement("a"), {
+                className: "btn",
+                href: RELEASES,
+                textContent: "See all downloads",
+              }),
+            );
+          }
+          document.getElementById("meta").textContent = `Latest version: ${rel.tag_name}`;
+          document.getElementById("note").textContent = NOTES[os] || "";
+          const list = document.getElementById("all");
+          for (const a of assets) {
+            const li = document.createElement("li");
+            li.append(
+              Object.assign(document.createElement("a"), {
+                href: a.browser_download_url,
+                textContent: a.name,
+              }),
+            );
+            list.append(li);
+          }
+        } catch {
+          primary.innerHTML = `<a class="btn" href="${RELEASES}">Go to releases</a>`;
+        }
+      })();
+    </script>
+  </body>
+</html>
