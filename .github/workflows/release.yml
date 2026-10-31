@@ -6,15 +6,29 @@ on:
       - "v*"
 
 jobs:
+  verify-version:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match app version
+        run: |
+          APP_VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          if [ "v$APP_VERSION" != "${{ github.ref_name }}" ]; then
+            echo "Tag ${{ github.ref_name }} != tauri.conf.json version v$APP_VERSION"; exit 1
+          fi
+
   release:
+    needs: verify-version
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
-            args: ""
+          - platform: macos-latest # Apple Silicon
+            args: "--target aarch64-apple-darwin"
+          - platform: macos-latest # Intel
+            args: "--target x86_64-apple-darwin"
           - platform: windows-latest
             args: ""
           - platform: ubuntu-22.04
@@ -32,6 +46,10 @@ jobs:
 
       - name: Install pinned Rust toolchain
         run: rustup toolchain install # reads rust-toolchain.toml
+
+      - name: Add macOS targets
+        if: matrix.platform == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -54,10 +72,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v__VERSION__
-          releaseName: "Desktop Search App v__VERSION__"
+          tagName: ${{ github.ref_name }}
+          releaseName: "Native Desktop Search ${{ github.ref_name }}"
           releaseBody: "Automated release for local and cloud desktop search client."
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+  publish:
+    needs: release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --draft=false --repo "${{ github.repository }}"
