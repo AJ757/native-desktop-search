@@ -90,6 +90,52 @@ fn google_drive_text(
     })
 }
 
+
+/// Text for a Notion page. Like Google Drive, text saved by an earlier
+/// rebuild is reused unless Notion reports a newer edit, so searches don't
+/// re-download every page. Pages with no text are indexed by title.
+fn notion_text(
+    state: &AppState,
+    document: &DocumentRow,
+    page_id: &str,
+) -> Result<ExtractedDocument> {
+    let cached: Option<String> = state.with_db(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT content FROM document_embeddings
+                 WHERE document_id = ?1 AND updated_at >= COALESCE(?2, 0)",
+                rusqlite::params![document.id, document.modified_at],
+                |row| row.get(0),
+            )
+            .optional()?)
+    })?;
+
+    let text = match cached {
+        Some(text) => text,
+        None => {
+            let source = state.with_db(|conn| crate::db::get_source(conn, document.source_id))?;
+            let workspace_id = source
+                .config
+                .get("workspace_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("default")
+                .to_string();
+            let connector = crate::connectors::NotionConnector::new(workspace_id);
+            let page_id = page_id.to_string();
+            block_on(async move { connector.download_text(&page_id).await })??
+        }
+    };
+
+    Ok(ExtractedDocument {
+        title: document.title.clone(),
+        text: if text.trim().is_empty() {
+            document.title.clone()
+        } else {
+            text
+        },
+    })
+}
+
 /// Runs a future to completion on a separate thread with its own runtime,
 /// so it works whether or not the caller is already inside a Tokio runtime.
 fn block_on<F>(future: F) -> Result<F::Output>
@@ -155,7 +201,25 @@ pub fn rebuild(state: &AppState) -> Result<()> {
                     continue;
                 }
             }
-        } else {
+        }
+        
+        else if let Some(page_id) = document.path.strip_prefix("notion:") {
+            match notion_text(state, &document, page_id) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::error!(
+                        path = %document.path,
+                        error = %error,
+                        "CHECK FAILED: NOTION DOWNLOAD ERROR"
+                    );
+
+                    skipped_count += 1;
+                    continue;
+                }
+            }
+        }
+        
+        else {
             let path = Path::new(&document.path);
 
             // 4. Check whether the file exists.

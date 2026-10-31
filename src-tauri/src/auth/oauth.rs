@@ -143,7 +143,15 @@ const HTML_SUCCESS: &str = r#"<!DOCTYPE html>
 /// 4. Awaits the callback, completes token exchange, and stores tokens in keychain
 pub async fn run_oauth_flow(provider: OAuthProvider) -> Result<OAuthSuccess> {
     let port = loopback_port();
-    let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+    //let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+    
+    // Notion refuses IP addresses in redirect URIs, so it gets `localhost`.
+    let host = if provider == OAuthProvider::Notion {
+        "localhost"
+    } else {
+        "127.0.0.1"
+    };
+    let redirect_uri = format!("http://{host}:{port}/callback");
 
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
     let csrf_state = CsrfToken::new_random();
@@ -256,6 +264,8 @@ pub fn build_auth_url(
 
             Ok(format!(
                 "{base_url}?client_id={client_id}&response_type=code&owner=user&redirect_uri={redirect_uri}&state={state}",
+                client_id = form_encode(&client_id),
+                redirect_uri = form_encode(redirect_uri),
                 state = csrf_state.secret()
             ))
         }
