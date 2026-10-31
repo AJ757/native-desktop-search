@@ -29,7 +29,6 @@ struct BlockList {
     has_more: bool,
 }
 
-
 #[derive(Debug, Clone)]
 pub struct NotionConnector {
     workspace_id: String,
@@ -298,7 +297,6 @@ impl NotionConnector {
         Ok(text)
     }
 }
-
 
 //new functions
 

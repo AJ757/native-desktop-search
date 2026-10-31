@@ -90,7 +90,6 @@ fn google_drive_text(
     })
 }
 
-
 /// Text for a Notion page. Like Google Drive, text saved by an earlier
 /// rebuild is reused unless Notion reports a newer edit, so searches don't
 /// re-download every page. Pages with no text are indexed by title.
@@ -201,9 +200,7 @@ pub fn rebuild(state: &AppState) -> Result<()> {
                     continue;
                 }
             }
-        }
-        
-        else if let Some(page_id) = document.path.strip_prefix("notion:") {
+        } else if let Some(page_id) = document.path.strip_prefix("notion:") {
             match notion_text(state, &document, page_id) {
                 Ok(value) => value,
                 Err(error) => {
@@ -217,9 +214,7 @@ pub fn rebuild(state: &AppState) -> Result<()> {
                     continue;
                 }
             }
-        }
-        
-        else {
+        } else {
             let path = Path::new(&document.path);
 
             // 4. Check whether the file exists.

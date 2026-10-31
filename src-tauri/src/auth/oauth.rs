@@ -144,7 +144,7 @@ const HTML_SUCCESS: &str = r#"<!DOCTYPE html>
 pub async fn run_oauth_flow(provider: OAuthProvider) -> Result<OAuthSuccess> {
     let port = loopback_port();
     //let redirect_uri = format!("http://127.0.0.1:{port}/callback");
-    
+
     // Notion refuses IP addresses in redirect URIs, so it gets `localhost`.
     let host = if provider == OAuthProvider::Notion {
         "localhost"
