@@ -34,14 +34,17 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+     "macOS": {
+      "minimumSystemVersion": "13.4"
+    }
   },
   "plugins": {
     "updater": {
       "endpoints": [
         "https://github.com/aj757/native-desktop-search/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZCREY4NEFCODA5N0VFNzEKUldSeDdwZUFxNFRmKzhkdHZOcGtISHFxTVhVQzhWMkVkcEhRcmIvZjAwZlMrUmRFRWlPU2JiS3kK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMwMEREQTU0MEUwOEE4QkMKUldTOHFBZ09WTm9OTU0xaUdkczVHRmtRMEh2cFl2cDdxK2xGRlFnOGYvaXJES05NOU53RnBlaDkK"
     }
   }
 }

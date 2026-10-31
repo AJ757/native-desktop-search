@@ -25,13 +25,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest # Apple Silicon
-            args: "--target aarch64-apple-darwin"
-          - platform: macos-latest # Intel
-            args: "--target x86_64-apple-darwin"
+          - platform: macos-latest
+            args: ""
           - platform: windows-latest
             args: ""
-          - platform: ubuntu-22.04
+          - platform: ubuntu-24.04
             args: ""
 
     runs-on: ${{ matrix.platform }}
@@ -47,17 +45,13 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup toolchain install # reads rust-toolchain.toml
 
-      - name: Add macOS targets
-        if: matrix.platform == 'macos-latest'
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
-
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
       - name: Install Linux dependencies (Ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -73,6 +67,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          MACOSX_DEPLOYMENT_TARGET: "13.4"
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Native Desktop Search ${{ github.ref_name }}"
