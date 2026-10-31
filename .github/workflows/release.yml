@@ -6,6 +6,9 @@ on:
       - "v*"
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   verify-version:
     runs-on: ubuntu-22.04
     steps:
@@ -18,7 +21,7 @@ jobs:
           fi
 
   release:
-    needs: verify-version
+    needs: [verify-version, ci]
     permissions:
       contents: write
     strategy:
