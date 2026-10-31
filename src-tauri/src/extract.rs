@@ -57,41 +57,10 @@ impl Extractor for TextExtractor {
 
         let text = match extension.as_str() {
             "pdf" => {
-                let executable: std::path::PathBuf = if cfg!(windows) {
-                    std::env::var("LOCALAPPDATA")
-                        .map(|base| {
-                            Path::new(&base)
-                                .join("Microsoft")
-                                .join("WinGet")
-                                .join("Packages")
-                                .join(
-                                    "oschwartz10612.Poppler_Microsoft.Winget.Source_8wekyb3d8bbwe",
-                                )
-                                .join("poppler-25.07.0")
-                                .join("Library")
-                                .join("bin")
-                                .join("pdftotext.exe")
-                        })
-                        .unwrap_or_else(|_| "pdftotext.exe".into())
-                } else {
-                    "pdftotext".into()
-                };
-
-                let output = std::process::Command::new(executable)
-                    .arg("-enc")
-                    .arg("UTF-8")
-                    .arg(path)
-                    .arg("-")
-                    .output()?;
-
-                if !output.status.success() {
-                    return Err(io::Error::other(
-                        String::from_utf8_lossy(&output.stderr).to_string(),
-                    )
-                    .into());
-                }
-
-                String::from_utf8_lossy(&output.stdout).into_owned()
+                let pdf_path = path.to_path_buf();
+                std::panic::catch_unwind(|| pdf_extract::extract_text(&pdf_path))
+                    .map_err(|_| io::Error::other("PDF extraction panicked"))?
+                    .map_err(|e| io::Error::other(format!("PDF extraction failed: {e}")))?
             }
 
             "docx" => extract_office_xml(path, "word/document.xml")?,
