@@ -20,6 +20,11 @@ const NOTION_VERSION: &str = "2022-06-28";
 const MAX_BLOCK_DEPTH: usize = 4;
 /// Stop reading a page once this much text has been collected.
 const MAX_TEXT_BYTES: usize = 1_000_000;
+/// Block lists fetched at once. Notion allows about three requests per
+/// second on average and answers bursts beyond that with HTTP 429.
+const PARALLEL_REQUESTS: usize = 3;
+/// Tries per request before giving up.
+const MAX_ATTEMPTS: u32 = 4;
 
 #[derive(Debug, Deserialize)]
 struct BlockList {
@@ -40,7 +45,6 @@ struct SearchResponse {
     results: Vec<NotionObject>,
     next_cursor: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     has_more: bool,
 }
 
@@ -80,20 +84,29 @@ impl NotionConnector {
         Ok(tokens.access_token)
     }
 
-    /// Fetches changed pages and databases from Notion.
+    /// Fetches pages and databases edited since the last sync.
+    ///
+    /// `cursor` is the newest edit time (Unix seconds) seen by the previous
+    /// sync; it is ours, never sent to Notion. Results come newest first, so
+    /// paging stops at the first item older than the cursor. Without a usable
+    /// cursor (first sync, or a value saved by an older version) everything
+    /// is listed.
     pub async fn fetch_changes(&self, cursor: Option<&str>) -> Result<CloudSyncResult> {
         let token = self.access_token()?;
         let client = reqwest::Client::new();
         let search_url = format!("{}/v1/search", self.base_url);
+        let headers = Self::auth_headers(&token)?;
 
+        let since = cursor.and_then(|c| c.parse::<i64>().ok());
+        let mut latest_edited_time = since;
         let mut events = Vec::new();
-        let next_cursor = cursor.map(|s| s.to_string());
-        let mut latest_edited_time = cursor.and_then(parse_rfc3339_to_unix);
+        let mut page_cursor: Option<String> = None;
 
         #[derive(Serialize)]
         struct SearchBody<'a> {
             #[serde(skip_serializing_if = "Option::is_none")]
             start_cursor: Option<&'a str>,
+            page_size: u32,
             sort: SortOption<'a>,
         }
 
@@ -103,79 +116,83 @@ impl NotionConnector {
             timestamp: &'a str,
         }
 
-        let body = SearchBody {
-            start_cursor: next_cursor.as_deref(),
-            sort: SortOption {
-                direction: "ascending",
-                timestamp: "last_edited_time",
-            },
-        };
+        'pages: loop {
+            let body = SearchBody {
+                start_cursor: page_cursor.as_deref(),
+                page_size: 100,
+                sort: SortOption {
+                    direction: "descending",
+                    timestamp: "last_edited_time",
+                },
+            };
 
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {token}"))
-                .map_err(|e| AppError::Other(e.to_string()))?,
-        );
-        headers.insert("Notion-Version", HeaderValue::from_static("2022-06-28"));
+            let (status, text) = send_with_retry(
+                || {
+                    client
+                        .post(&search_url)
+                        .headers(headers.clone())
+                        .json(&body)
+                },
+                "Notion search request",
+            )
+            .await?;
+            if !status.is_success() {
+                return Err(AppError::Other(format!(
+                    "Notion API error ({status}): {text}"
+                )));
+            }
+            let data: SearchResponse = serde_json::from_str(&text)
+                .map_err(|e| AppError::Other(format!("Invalid Notion JSON response: {e}")))?;
 
-        let resp = client
-            .post(&search_url)
-            .headers(headers)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| AppError::Other(format!("Notion search request failed: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::Other(format!(
-                "Notion API error ({status}): {text}"
-            )));
-        }
-
-        let data: SearchResponse = resp
-            .json()
-            .await
-            .map_err(|e| AppError::Other(format!("Invalid Notion JSON response: {e}")))?;
-
-        for obj in data.results {
-            if obj.archived {
-                events.push(SourceEvent::Delete {
-                    external_id: format!("notion:{}", obj.id),
-                });
-            } else {
-                let title = extract_notion_title(&obj.properties);
+            for obj in data.results {
                 let modified_at = obj
                     .last_edited_time
                     .as_deref()
                     .and_then(parse_rfc3339_to_unix);
 
+                // Notion rounds edit times to the minute, so items edited in
+                // the same minute as the cursor are listed again; re-listing
+                // an unchanged page does not re-index it.
+                if let (Some(t), Some(since)) = (modified_at, since) {
+                    if t < since {
+                        break 'pages;
+                    }
+                }
                 if let Some(t) = modified_at {
                     if latest_edited_time.is_none_or(|cur| t > cur) {
                         latest_edited_time = Some(t);
                     }
                 }
 
-                events.push(SourceEvent::Upsert {
-                    external_id: format!("notion:{}", obj.id),
-                    title: if title.is_empty() {
-                        "Untitled Notion Page".into()
-                    } else {
-                        title
-                    },
-                    mime: Some("application/notion-page".into()),
-                    modified_at,
-                });
+                if obj.archived {
+                    events.push(SourceEvent::Delete {
+                        external_id: format!("notion:{}", obj.id),
+                    });
+                } else {
+                    let title = extract_notion_title(&obj.properties);
+                    events.push(SourceEvent::Upsert {
+                        external_id: format!("notion:{}", obj.id),
+                        title: if title.is_empty() {
+                            "Untitled Notion Page".into()
+                        } else {
+                            title
+                        },
+                        mime: Some("application/notion-page".into()),
+                        modified_at,
+                    });
+                }
+            }
+
+            match (data.has_more, data.next_cursor) {
+                (true, Some(next)) => page_cursor = Some(next),
+                _ => break,
             }
         }
 
-        let new_cursor = data
-            .next_cursor
-            .or_else(|| latest_edited_time.map(|t| t.to_string()));
-
-        Ok(CloudSyncResult { events, new_cursor })
+        Ok(CloudSyncResult {
+            events,
+            new_cursor: latest_edited_time.map(|t| t.to_string()),
+        })
     }
 
     fn auth_headers(token: &str) -> Result<HeaderMap> {
@@ -189,8 +206,7 @@ impl NotionConnector {
         Ok(headers)
     }
 
-    /// Lists the direct child blocks of a page or block, following pagination
-    /// and waiting out Notion's rate limit (HTTP 429).
+    /// Lists the direct child blocks of a page or block, following pagination.
     async fn list_children(
         &self,
         client: &reqwest::Client,
@@ -198,6 +214,7 @@ impl NotionConnector {
         block_id: &str,
     ) -> Result<Vec<serde_json::Value>> {
         let url = format!("{}/v1/blocks/{block_id}/children", self.base_url);
+        let headers = Self::auth_headers(token)?;
         let mut blocks = Vec::new();
         let mut cursor: Option<String> = None;
 
@@ -207,45 +224,23 @@ impl NotionConnector {
                 query.push(("start_cursor", c.clone()));
             }
 
-            let mut attempts = 0;
-            let resp = loop {
-                let resp = client
-                    .get(&url)
-                    .headers(Self::auth_headers(token)?)
-                    .query(&query)
-                    .send()
-                    .await
-                    .map_err(|e| AppError::Other(format!("Notion block request failed: {e}")))?;
-                if resp.status().as_u16() == 429 && attempts < 3 {
-                    let wait = resp
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(1)
-                        .min(30);
-                    tokio::time::sleep(Duration::from_secs(wait)).await;
-                    attempts += 1;
-                    continue;
-                }
-                break resp;
-            };
+            let (status, body) = send_with_retry(
+                || client.get(&url).headers(headers.clone()).query(&query),
+                "Notion block request",
+            )
+            .await?;
 
             // Databases and some block types have no readable children.
-            if resp.status().as_u16() == 400 {
+            if status.as_u16() == 400 {
                 return Ok(blocks);
             }
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
+            if !status.is_success() {
                 return Err(AppError::Other(format!(
-                    "Notion block API error ({status}): {text}"
+                    "Notion block API error ({status}): {body}"
                 )));
             }
 
-            let page: BlockList = resp
-                .json()
-                .await
+            let page: BlockList = serde_json::from_str(&body)
                 .map_err(|e| AppError::Other(format!("Invalid Notion block JSON: {e}")))?;
             blocks.extend(page.results);
 
@@ -260,42 +255,125 @@ impl NotionConnector {
     /// Collects a page's text (paragraphs, headings, lists, to-dos, quotes,
     /// table cells and so on) for indexing. `page_id` is the bare Notion ID,
     /// without the `notion:` prefix.
+    ///
+    /// Nested blocks are read level by level, a few requests at a time.
     pub async fn download_text(&self, page_id: &str) -> Result<String> {
         let token = self.access_token()?;
         let client = reqwest::Client::new();
         let mut text = String::new();
-        let mut pending: Vec<(String, usize)> = vec![(page_id.to_string(), 0)];
+        let mut level = vec![page_id.to_string()];
 
-        while let Some((block_id, depth)) = pending.pop() {
-            for block in self.list_children(&client, &token, &block_id).await? {
-                let line = block_text(&block);
-                if !line.is_empty() {
-                    text.push_str(&line);
-                    text.push('\n');
-                }
-                if text.len() >= MAX_TEXT_BYTES {
-                    return Ok(text);
-                }
+        for depth in 0..=MAX_BLOCK_DEPTH {
+            let mut next_level = Vec::new();
 
-                // Sub-pages are separate documents, so don't read into them here.
-                let kind = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                let has_children = block
-                    .get("has_children")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if has_children
-                    && depth < MAX_BLOCK_DEPTH
-                    && kind != "child_page"
-                    && kind != "child_database"
-                {
-                    if let Some(id) = block.get("id").and_then(|v| v.as_str()) {
-                        pending.push((id.to_string(), depth + 1));
+            for group in level.chunks(PARALLEL_REQUESTS) {
+                let tasks: Vec<_> = group
+                    .iter()
+                    .map(|block_id| {
+                        let (this, client, token, block_id) = (
+                            self.clone(),
+                            client.clone(),
+                            token.clone(),
+                            block_id.clone(),
+                        );
+                        tokio::spawn(
+                            async move { this.list_children(&client, &token, &block_id).await },
+                        )
+                    })
+                    .collect();
+
+                for task in tasks {
+                    let blocks = task.await.map_err(|e| {
+                        AppError::Internal(format!("Notion download task failed: {e}"))
+                    })??;
+
+                    for block in blocks {
+                        let line = block_text(&block);
+                        if !line.is_empty() {
+                            text.push_str(&line);
+                            text.push('\n');
+                        }
+
+                        // Sub-pages are separate documents, so don't read into them here.
+                        let kind = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        let has_children = block
+                            .get("has_children")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        if has_children
+                            && depth < MAX_BLOCK_DEPTH
+                            && kind != "child_page"
+                            && kind != "child_database"
+                        {
+                            if let Some(id) = block.get("id").and_then(|v| v.as_str()) {
+                                next_level.push(id.to_string());
+                            }
+                        }
+                    }
+                    if text.len() >= MAX_TEXT_BYTES {
+                        return Ok(text);
                     }
                 }
             }
+
+            if next_level.is_empty() {
+                break;
+            }
+            level = next_level;
         }
         Ok(text)
     }
+}
+
+/// Sends a request, retrying rate limits (HTTP 429), server errors, dropped
+/// connections and responses cut off mid-body, which Notion produces now and
+/// then. Returns the status and body of the last attempt.
+async fn send_with_retry(
+    request: impl Fn() -> reqwest::RequestBuilder,
+    what: &str,
+) -> Result<(reqwest::StatusCode, String)> {
+    for attempt in 1..=MAX_ATTEMPTS {
+        let last = attempt == MAX_ATTEMPTS;
+        let backoff = Duration::from_secs(1u64 << attempt); // 2, 4, 8 s
+
+        let resp = match request().send().await {
+            Ok(resp) => resp,
+            Err(e) if !last => {
+                tracing::debug!("{what} failed (attempt {attempt}): {e}; retrying");
+                tokio::time::sleep(backoff).await;
+                continue;
+            }
+            Err(e) => return Err(AppError::Other(format!("{what} failed: {e}"))),
+        };
+
+        let status = resp.status();
+        if !last && (status.as_u16() == 429 || status.is_server_error()) {
+            let wait = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .map(Duration::from_secs)
+                .unwrap_or(backoff)
+                .min(Duration::from_secs(30));
+            tokio::time::sleep(wait).await;
+            continue;
+        }
+
+        match resp.text().await {
+            Ok(body) => return Ok((status, body)),
+            Err(e) if !last => {
+                tracing::debug!("{what}: response cut off (attempt {attempt}): {e}; retrying");
+                tokio::time::sleep(backoff).await;
+            }
+            Err(e) => {
+                return Err(AppError::Other(format!(
+                    "{what}: could not read response: {e}"
+                )))
+            }
+        }
+    }
+    unreachable!("the last attempt always returns")
 }
 
 //new functions
@@ -413,5 +491,21 @@ mod tests {
 
         let res = connector.fetch_changes(None).await.unwrap();
         assert_eq!(res.events.len(), 2);
+
+        // The saved cursor is an edit time, and the next sync must accept it.
+        let cursor = res.new_cursor.expect("first sync saves a cursor");
+        assert!(cursor.parse::<i64>().is_ok(), "cursor {cursor:?}");
+        connector.fetch_changes(Some(&cursor)).await.unwrap();
+
+        // Nothing in the mock workspace was edited after 2030.
+        let later = connector.fetch_changes(Some("1900000000")).await.unwrap();
+        assert!(later.events.is_empty());
+
+        // Cursors saved by older versions (Notion page cursors) mean a full listing.
+        let legacy = connector
+            .fetch_changes(Some("2b85ecb1-9aac-81a7-a645-eab8825a36ed"))
+            .await
+            .unwrap();
+        assert_eq!(legacy.events.len(), 2);
     }
 }

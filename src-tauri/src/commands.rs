@@ -11,14 +11,13 @@ use crate::error::{AppError, Result};
 use crate::sources;
 use crate::types::{AddSourceRequest, IndexStatus, Source};
 
-/// Runs off the main thread: a rebuild can download cloud documents and
-/// compute embeddings, which would otherwise freeze the window.
+/// Searches the index as it is now. Indexing happens in the background
+/// (see `indexer`), so a search never waits for it.
 #[tauri::command(async)]
 pub fn search(
     state: tauri::State<'_, crate::app::AppState>,
     request: crate::types::SearchRequest,
 ) -> crate::error::Result<crate::types::SearchResponse> {
-    crate::indexer::rebuild_if_changed(&state)?;
     crate::search::search(&state, &request)
 }
 
@@ -63,6 +62,11 @@ pub fn add_source(state: State<'_, AppState>, request: AddSourceRequest) -> Resu
 #[tauri::command(async)]
 pub fn remove_source(state: State<'_, AppState>, id: i64) -> Result<()> {
     state.sync.stop_source(id);
+    // Deleting the source deletes its rows, so drop them from the index first.
+    for document_id in state.with_db(|conn| crate::indexer::source_document_ids(conn, id))? {
+        state.index.delete(document_id)?;
+    }
+    state.index.commit()?;
     state.with_db(|conn| db::delete_source(conn, id))?;
     tracing::info!(id, "source removed");
     Ok(())
@@ -75,8 +79,17 @@ pub fn list_sources(state: State<'_, AppState>) -> Result<Vec<Source>> {
 
 #[tauri::command(async)]
 pub fn get_index_status(state: State<'_, AppState>) -> Result<IndexStatus> {
-    let total = state.with_db(db::count_documents)?;
-    Ok(state.sync.status(total))
+    let (total, unindexed) = state.with_db(|conn| {
+        Ok((
+            db::count_documents(conn)?,
+            crate::indexer::pending_count(conn)?,
+        ))
+    })?;
+    // Documents waiting for the background indexer count as queued work.
+    let mut status = state.sync.status(total);
+    status.queued += unindexed;
+    status.is_indexing |= unindexed > 0;
+    Ok(status)
 }
 
 /// Shows the folder holding a search result: the file manager for local
