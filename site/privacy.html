@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Privacy Policy – Native Desktop Search</title>
+    <style>
+      :root {
+        --bg: #fff;
+        --fg: #1a1a1a;
+        --muted: #666;
+        --card: #f4f4f5;
+        --accent: #2563eb;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #111214;
+          --fg: #ececec;
+          --muted: #9a9a9a;
+          --card: #1c1d20;
+          --accent: #3b82f6;
+        }
+      }
+      body {
+        margin: 0;
+        font:
+          16px/1.6 system-ui,
+          sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 48px 20px 64px;
+      }
+      h1 {
+        margin: 0 0 4px;
+        font-size: 2rem;
+      }
+      h2 {
+        margin: 36px 0 8px;
+        font-size: 1.25rem;
+      }
+      .meta {
+        color: var(--muted);
+        font-size: 0.9rem;
+        margin: 0 0 24px;
+      }
+      .callout {
+        background: var(--card);
+        border-radius: 8px;
+        padding: 12px 16px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.95rem;
+      }
+      th,
+      td {
+        text-align: left;
+        vertical-align: top;
+        padding: 8px;
+        border-bottom: 1px solid var(--card);
+      }
+      code {
+        overflow-wrap: anywhere;
+      }
+      li {
+        margin: 6px 0;
+      }
+      a {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p><a href="./">← Native Desktop Search</a></p>
+      <h1>Privacy Policy</h1>
+      <p class="meta">Last updated: November 2, 2026</p>
+
+      <p class="callout">
+        <strong>In short:</strong> Native Desktop Search runs entirely on your computer. Files and
+        data it reads from Google Drive, OneDrive, Notion, or your local folders are used only to
+        build a search index stored on your own device. We do not operate servers that receive your
+        data, and we never sell, share, or transfer it to anyone.
+      </p>
+
+      <h2>1. Who we are</h2>
+      <p>
+        Native Desktop Search ("the app", "we") is an open-source desktop application for searching
+        your local and cloud files. Source code:
+        <a href="https://github.com/aj757/native-desktop-search"
+          >github.com/aj757/native-desktop-search</a
+        >. This policy explains what data the app accesses, how it is used, where it is stored, and
+        how you can delete it.
+      </p>
+
+      <h2>2. Data the app accesses</h2>
+      <p>The app only accesses a source after you add or connect it yourself.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Source</th>
+            <th>Data accessed</th>
+            <th>Permission requested</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Google Drive</td>
+            <td>
+              File names, file types, modification dates, parent folder IDs, and the text content of
+              your files; your Google account ID and email address (to identify the connected
+              account)
+            </td>
+            <td><code>https://www.googleapis.com/auth/drive.readonly</code> (read-only)</td>
+          </tr>
+          <tr>
+            <td>Microsoft OneDrive</td>
+            <td>File names, metadata, and content; your account name and ID</td>
+            <td>Microsoft Graph read-only file access</td>
+          </tr>
+          <tr>
+            <td>Notion</td>
+            <td>Titles and text of the pages you choose to share with the app</td>
+            <td>Notion read access to selected pages</td>
+          </tr>
+          <tr>
+            <td>Local folders and Obsidian vaults</td>
+            <td>File names, paths, and text content of files in folders you select</td>
+            <td>Operating system file access</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        The app <strong>never</strong> creates, modifies, moves, shares, or deletes files in your
+        Google Drive or any other source. All cloud access is read-only.
+      </p>
+
+      <h2>3. How we use your data</h2>
+      <p>Data accessed from these sources is used for one purpose only:</p>
+      <ul>
+        <li>
+          to build and update a search index on your computer so that you can search your own files,
+          see text snippets in results, and open the folder containing a result.
+        </li>
+      </ul>
+      <p>We do not use your data for advertising, profiling, analytics, or any other purpose.</p>
+
+      <h2>4. Google user data</h2>
+      <p>
+        Native Desktop Search's use and transfer of information received from Google APIs will
+        adhere to the
+        <a href="https://developers.google.com/terms/api-services-user-data-policy"
+          >Google API Services User Data Policy</a
+        >, including the Limited Use requirements.
+      </p>
+      <p>Specifically, for data obtained through Google APIs:</p>
+      <ul>
+        <li>
+          It is used only to provide the search feature described above, which is visible to you in
+          the app.
+        </li>
+        <li>
+          It is not transferred to anyone, except as needed to provide that feature, to comply with
+          applicable law, or as part of a merger or acquisition with your consent.
+        </li>
+        <li>
+          It is not used or transferred for serving ads, including retargeting or personalised ads.
+        </li>
+        <li>
+          It is not used to determine credit-worthiness or for lending purposes, and it is not sold
+          to data brokers or information resellers.
+        </li>
+        <li>
+          No human reads it. The developers have no access to your Google data, because it never
+          leaves your device.
+        </li>
+        <li>
+          It is not used to develop, improve, or train generalised or non-personalised AI or machine
+          learning models. Any semantic search runs a model locally on your device.
+        </li>
+      </ul>
+
+      <h2>5. Where your data is stored</h2>
+      <ul>
+        <li>
+          <strong>Search index and file text:</strong> stored in the app's data folder on your
+          computer (a local database and index files). It is not uploaded anywhere.
+        </li>
+        <li>
+          <strong>Sign-in tokens:</strong> OAuth access and refresh tokens are stored in your
+          operating system's secure credential store (Windows Credential Manager, macOS Keychain, or
+          the Linux Secret Service). Your passwords are never seen or stored by the app; you sign in
+          directly on Google's, Microsoft's, or Notion's own pages.
+        </li>
+        <li><strong>Logs:</strong> diagnostic logs are kept locally and never sent to us.</li>
+      </ul>
+      <p>
+        The app communicates only with the services you connect (Google, Microsoft, Notion) and with
+        GitHub to check for app updates. Update checks do not include any of your files or account
+        data.
+      </p>
+
+      <h2>6. Sharing</h2>
+      <p>
+        We do not sell, rent, share, or transfer your data to any third party. We do not run any
+        server that collects it.
+      </p>
+
+      <h2>7. Retention and deletion</h2>
+      <ul>
+        <li>
+          Data is kept on your device only for as long as the source stays connected in the app.
+        </li>
+        <li>
+          <strong>Remove a source</strong> in the app (Sources → Remove) to delete all indexed data
+          for that source from your device.
+        </li>
+        <li>
+          <strong>Revoke access</strong> to Google Drive at any time at
+          <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.
+          This immediately invalidates the stored tokens.
+        </li>
+        <li>
+          <strong>Uninstall the app</strong> and delete its data folder to remove everything it
+          stored. Stored sign-in tokens can also be deleted from your operating system's credential
+          manager.
+        </li>
+      </ul>
+
+      <h2>8. Security</h2>
+      <p>
+        All communication with Google, Microsoft, and Notion uses HTTPS. Sign-in uses OAuth 2.0 with
+        PKCE, and tokens are kept in the operating system's encrypted credential store.
+      </p>
+
+      <h2>9. Children</h2>
+      <p>The app is not directed to children under 13 and does not knowingly collect their data.</p>
+
+      <h2>10. Changes to this policy</h2>
+      <p>
+        If this policy changes, the updated version will be posted on this page with a new "Last
+        updated" date.
+      </p>
+
+      <h2>11. Contact</h2>
+      <p>
+        Questions about this policy or your data:
+        <a href="mailto:lakshanabaskaran01@gmail.com">lakshanabaskaran01@gmail.com</a>
+      </p>
+    </main>
+  </body>
+</html>
