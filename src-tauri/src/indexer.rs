@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Mutex;
 
 use rusqlite::{Connection, OptionalExtension};
 
@@ -155,6 +156,40 @@ where
     })
 }
 
+/// Document count, highest id and summed modification times: changes whenever
+/// a document is added, removed or modified.
+type Fingerprint = (i64, i64, i64);
+
+/// Fingerprint of the documents the index was last built from. The mutex also
+/// keeps two searches from rebuilding at the same time.
+static LAST_BUILD: Mutex<Option<Fingerprint>> = Mutex::new(None);
+
+fn fingerprint(conn: &Connection) -> Result<Fingerprint> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*), COALESCE(MAX(id), 0), COALESCE(SUM(COALESCE(modified_at, 0)), 0)
+         FROM documents
+         WHERE deleted = 0",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?)
+}
+
+/// Rebuilds the index only if documents changed since the last rebuild.
+pub fn rebuild_if_changed(state: &AppState) -> Result<()> {
+    let mut last = LAST_BUILD
+        .lock()
+        .map_err(|_| AppError::Other("index rebuild lock poisoned".into()))?;
+
+    let current = state.with_db(fingerprint)?;
+    if *last == Some(current) {
+        return Ok(());
+    }
+
+    rebuild(state)?;
+    *last = Some(current);
+    Ok(())
+}
+
 pub fn rebuild(state: &AppState) -> Result<()> {
     tracing::info!("========== INDEX REBUILD START ==========");
 
@@ -280,15 +315,13 @@ pub fn rebuild(state: &AppState) -> Result<()> {
             "CHECK 7: TEXT EXTRACTION COMPLETED"
         );
 
-        // 7. Check extracted text.
+        // 7. Check extracted text. Files without any (e.g. scanned PDFs) are
+        // still indexed so they can be found by name.
         if extracted.text.trim().is_empty() {
             tracing::warn!(
                 path = %document.path,
-                "CHECK FAILED: EXTRACTED TEXT IS EMPTY"
+                "EXTRACTED TEXT IS EMPTY; INDEXING BY TITLE ONLY"
             );
-
-            skipped_count += 1;
-            continue;
         }
 
         // 8. Construct the Tantivy document.

@@ -11,12 +11,14 @@ use crate::error::{AppError, Result};
 use crate::sources;
 use crate::types::{AddSourceRequest, IndexStatus, Source};
 
-#[tauri::command]
+/// Runs off the main thread: a rebuild can download cloud documents and
+/// compute embeddings, which would otherwise freeze the window.
+#[tauri::command(async)]
 pub fn search(
     state: tauri::State<'_, crate::app::AppState>,
     request: crate::types::SearchRequest,
 ) -> crate::error::Result<crate::types::SearchResponse> {
-    crate::indexer::rebuild(&state)?;
+    crate::indexer::rebuild_if_changed(&state)?;
     crate::search::search(&state, &request)
 }
 
