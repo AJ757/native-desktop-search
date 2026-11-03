@@ -58,6 +58,7 @@ pub fn run() {
             }
 
             app.manage(app::AppState::new(paths, conn, sync, search_index, guard));
+            indexer::spawn(app.handle().clone())?;
 
             #[cfg(desktop)]
             register_hotkey(app)?;

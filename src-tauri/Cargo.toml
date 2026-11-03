@@ -1,6 +1,6 @@
 [package]
 name = "native-desktop-search"
-version = "1.0.0"
+version = "1.0.1"
 description = "Local-first desktop search across local files and cloud sources"
 authors = [
     "Ajeetha J",

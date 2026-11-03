@@ -94,7 +94,11 @@ pub fn search(state: &AppState, req: &SearchRequest) -> Result<SearchResponse> {
                 continue;
             }
 
-            let source = state.with_db(|conn| crate::db::get_source(conn, indexed.source_id))?;
+            // A source removed a moment ago can still have entries in the index.
+            let Ok(source) = state.with_db(|conn| crate::db::get_source(conn, indexed.source_id))
+            else {
+                continue;
+            };
 
             hits.push(SearchHit {
                 document_id: indexed.document_id,
