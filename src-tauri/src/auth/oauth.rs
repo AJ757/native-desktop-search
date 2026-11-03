@@ -54,11 +54,31 @@ impl OAuthProvider {
 
 const GOOGLE_SCOPES: &str = "https://www.googleapis.com/auth/drive.readonly";
 
-/// Reads a Google OAuth credential from the environment. Without a mock
-/// server configured, a missing or blank value is an error rather than a
-/// placeholder, since Google would reject it with an unhelpful page.
+/// Reads an OAuth setting. The runtime environment wins (`.env` in dev, mock
+/// servers in CI); otherwise the value baked in at compile time is used, which
+/// is how release builds get credentials from GitHub Actions secrets.
+fn config(name: &str) -> Option<String> {
+    let baked = match name {
+        "GOOGLE_CLIENT_ID" => option_env!("GOOGLE_CLIENT_ID"),
+        "GOOGLE_CLIENT_SECRET" => option_env!("GOOGLE_CLIENT_SECRET"),
+        "MICROSOFT_CLIENT_ID" => option_env!("MICROSOFT_CLIENT_ID"),
+        "MICROSOFT_TENANT" => option_env!("MICROSOFT_TENANT"),
+        "NOTION_CLIENT_ID" => option_env!("NOTION_CLIENT_ID"),
+        "NOTION_CLIENT_SECRET" => option_env!("NOTION_CLIENT_SECRET"),
+        "OAUTH_LOOPBACK_PORT" => option_env!("OAUTH_LOOPBACK_PORT"),
+        _ => None,
+    };
+    std::env::var(name)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| baked.filter(|v| !v.trim().is_empty()).map(String::from))
+}
+
+/// Reads a Google OAuth credential. Without a mock server configured, a
+/// missing or blank value is an error rather than a placeholder, since Google
+/// would reject it with an unhelpful page.
 fn google_credential(name: &str, mock_value: &str) -> Result<String> {
-    match std::env::var(name).ok().filter(|v| !v.trim().is_empty()) {
+    match config(name) {
         Some(value) => Ok(value),
         None if google_mock_base().is_some() => Ok(mock_value.into()),
         None => Err(AppError::Config(format!(
@@ -83,8 +103,7 @@ pub struct OAuthSuccess {
 
 /// Discovers the loopback port to bind.
 pub fn loopback_port() -> u16 {
-    std::env::var("OAUTH_LOOPBACK_PORT")
-        .ok()
+    config("OAUTH_LOOPBACK_PORT")
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(DEFAULT_LOOPBACK_PORT)
 }
@@ -235,9 +254,9 @@ pub fn build_auth_url(
 ) -> Result<String> {
     match provider {
         OAuthProvider::Microsoft => {
-            let client_id = std::env::var("MICROSOFT_CLIENT_ID")
-                .unwrap_or_else(|_| "mock_microsoft_client_id".into());
-            let tenant = std::env::var("MICROSOFT_TENANT").unwrap_or_else(|_| "common".into());
+            let client_id = config("MICROSOFT_CLIENT_ID")
+                .unwrap_or_else(|| "mock_microsoft_client_id".into());
+            let tenant = config("MICROSOFT_TENANT").unwrap_or_else(|| "common".into());
 
             let base_url = if let Ok(mock_base) = std::env::var("MICROSOFT_API_BASE_URL") {
                 format!("{mock_base}/common/oauth2/v2.0/authorize")
@@ -253,8 +272,8 @@ pub fn build_auth_url(
             ))
         }
         OAuthProvider::Notion => {
-            let client_id = std::env::var("NOTION_CLIENT_ID")
-                .unwrap_or_else(|_| "mock_notion_client_id".into());
+            let client_id = config("NOTION_CLIENT_ID")
+                .unwrap_or_else(|| "mock_notion_client_id".into());
 
             let base_url = if let Ok(mock_base) = std::env::var("NOTION_API_BASE_URL") {
                 format!("{mock_base}/v1/oauth/authorize")
@@ -390,9 +409,9 @@ pub async fn exchange_code(
 
     match provider {
         OAuthProvider::Microsoft => {
-            let client_id = std::env::var("MICROSOFT_CLIENT_ID")
-                .unwrap_or_else(|_| "mock_microsoft_client_id".into());
-            let tenant = std::env::var("MICROSOFT_TENANT").unwrap_or_else(|_| "common".into());
+            let client_id = config("MICROSOFT_CLIENT_ID")
+                .unwrap_or_else(|| "mock_microsoft_client_id".into());
+            let tenant = config("MICROSOFT_TENANT").unwrap_or_else(|| "common".into());
 
             let token_url = if let Ok(mock_base) = std::env::var("MICROSOFT_API_BASE_URL") {
                 format!("{mock_base}/microsoft/token")
@@ -485,10 +504,10 @@ pub async fn exchange_code(
             })
         }
         OAuthProvider::Notion => {
-            let client_id = std::env::var("NOTION_CLIENT_ID")
-                .unwrap_or_else(|_| "mock_notion_client_id".into());
-            let client_secret = std::env::var("NOTION_CLIENT_SECRET")
-                .unwrap_or_else(|_| "mock_notion_client_secret".into());
+            let client_id = config("NOTION_CLIENT_ID")
+                .unwrap_or_else(|| "mock_notion_client_id".into());
+            let client_secret = config("NOTION_CLIENT_SECRET")
+                .unwrap_or_else(|| "mock_notion_client_secret".into());
 
             let token_url = if let Ok(mock_base) = std::env::var("NOTION_API_BASE_URL") {
                 format!("{mock_base}/v1/oauth/token")

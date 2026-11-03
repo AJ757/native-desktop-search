@@ -71,6 +71,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           MACOSX_DEPLOYMENT_TARGET: "13.4"
+          # Baked into the binary at compile time via option_env! (see auth/oauth.rs)
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          MICROSOFT_CLIENT_ID: ${{ secrets.MICROSOFT_CLIENT_ID }}
+          MICROSOFT_TENANT: ${{ secrets.MICROSOFT_TENANT }}
+          NOTION_CLIENT_ID: ${{ secrets.NOTION_CLIENT_ID }}
+          NOTION_CLIENT_SECRET: ${{ secrets.NOTION_CLIENT_SECRET }}
+          OAUTH_LOOPBACK_PORT: ${{ secrets.OAUTH_LOOPBACK_PORT }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Native Desktop Search ${{ github.ref_name }}"
