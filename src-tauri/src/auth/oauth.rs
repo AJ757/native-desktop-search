@@ -254,8 +254,8 @@ pub fn build_auth_url(
 ) -> Result<String> {
     match provider {
         OAuthProvider::Microsoft => {
-            let client_id = config("MICROSOFT_CLIENT_ID")
-                .unwrap_or_else(|| "mock_microsoft_client_id".into());
+            let client_id =
+                config("MICROSOFT_CLIENT_ID").unwrap_or_else(|| "mock_microsoft_client_id".into());
             let tenant = config("MICROSOFT_TENANT").unwrap_or_else(|| "common".into());
 
             let base_url = if let Ok(mock_base) = std::env::var("MICROSOFT_API_BASE_URL") {
@@ -272,8 +272,8 @@ pub fn build_auth_url(
             ))
         }
         OAuthProvider::Notion => {
-            let client_id = config("NOTION_CLIENT_ID")
-                .unwrap_or_else(|| "mock_notion_client_id".into());
+            let client_id =
+                config("NOTION_CLIENT_ID").unwrap_or_else(|| "mock_notion_client_id".into());
 
             let base_url = if let Ok(mock_base) = std::env::var("NOTION_API_BASE_URL") {
                 format!("{mock_base}/v1/oauth/authorize")
@@ -409,8 +409,8 @@ pub async fn exchange_code(
 
     match provider {
         OAuthProvider::Microsoft => {
-            let client_id = config("MICROSOFT_CLIENT_ID")
-                .unwrap_or_else(|| "mock_microsoft_client_id".into());
+            let client_id =
+                config("MICROSOFT_CLIENT_ID").unwrap_or_else(|| "mock_microsoft_client_id".into());
             let tenant = config("MICROSOFT_TENANT").unwrap_or_else(|| "common".into());
 
             let token_url = if let Ok(mock_base) = std::env::var("MICROSOFT_API_BASE_URL") {
@@ -504,8 +504,8 @@ pub async fn exchange_code(
             })
         }
         OAuthProvider::Notion => {
-            let client_id = config("NOTION_CLIENT_ID")
-                .unwrap_or_else(|| "mock_notion_client_id".into());
+            let client_id =
+                config("NOTION_CLIENT_ID").unwrap_or_else(|| "mock_notion_client_id".into());
             let client_secret = config("NOTION_CLIENT_SECRET")
                 .unwrap_or_else(|| "mock_notion_client_secret".into());
 
