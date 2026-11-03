@@ -4,3 +4,5 @@ src-tauri
 src/bindings
 package-lock.json
 *.md
+# Google Search Console verification file; must stay byte-for-byte as issued
+site/google*.html
