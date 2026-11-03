@@ -44,7 +44,8 @@ pub struct IndexedHit {
 
 impl SearchIndex {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        std::fs::create_dir_all(path.as_ref())?;
+        let path = path.as_ref();
+        std::fs::create_dir_all(path)?;
 
         let mut schema_builder = Schema::builder();
 
@@ -64,7 +65,19 @@ impl SearchIndex {
 
         let schema = schema_builder.build();
 
-        let index = Index::open_or_create(tantivy::directory::MmapDirectory::open(path)?, schema)?;
+        let directory = tantivy::directory::MmapDirectory::open(path)?;
+        let index = match Index::open_or_create(directory, schema.clone()) {
+            Ok(index) => index,
+            // An update changed the schema. The index only mirrors the
+            // database, so start a fresh one and let the indexer refill it.
+            Err(tantivy::TantivyError::SchemaError(message)) => {
+                tracing::warn!("search index schema changed ({message}); recreating it");
+                std::fs::remove_dir_all(path)?;
+                std::fs::create_dir_all(path)?;
+                Index::create_in_dir(path, schema)?
+            }
+            Err(e) => return Err(e.into()),
+        };
 
         let writer = index.writer(50_000_000)?;
 
@@ -148,6 +161,12 @@ impl SearchIndex {
         writer.commit()?;
 
         Ok(())
+    }
+
+    /// Number of committed documents in the index.
+    pub fn num_docs(&self) -> Result<u64> {
+        self.reader.reload()?;
+        Ok(self.reader.searcher().num_docs())
     }
 
     pub fn search(&self, query_text: &str, limit: usize) -> Result<(Vec<IndexedHit>, u32, u32)> {
@@ -305,5 +324,19 @@ mod tests {
 
         let (hits, _, _) = index.search("xyz", 10).unwrap();
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn an_index_with_an_old_schema_is_recreated() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("index");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut old = Schema::builder();
+        old.add_text_field("something_else", TEXT | STORED);
+        Index::create_in_dir(&dir, old.build()).unwrap();
+
+        let index = SearchIndex::open(&dir).unwrap();
+        assert_eq!(index.num_docs().unwrap(), 0);
     }
 }

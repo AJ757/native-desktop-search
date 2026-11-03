@@ -1,11 +1,32 @@
+//! Background indexer.
+//!
+//! Keeps the Tantivy index and the stored embeddings in step with the
+//! `documents` table. The sync service clears `indexed_at` whenever a document
+//! is added or changes; this indexer picks those rows up, indexes each one
+//! once, and drops deleted documents from the index. Searches never wait for it.
+
+use std::collections::HashMap;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, OptionalExtension};
+use tauri::Manager;
 
 use crate::app::AppState;
 use crate::error::{AppError, Result};
 use crate::extract::{ExtractedDocument, Extractor};
 use crate::index::IndexedDocument;
+
+/// How often the indexer looks for new, changed or removed documents.
+const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Documents indexed per commit, so results show up while a large folder is
+/// still being processed.
+const BATCH_SIZE: usize = 25;
+
+/// How long to wait before retrying a document whose text could not be
+/// downloaded.
+const RETRY_AFTER: Duration = Duration::from_secs(300);
 
 struct DocumentRow {
     id: i64,
@@ -16,32 +37,15 @@ struct DocumentRow {
     mime: Option<String>,
 }
 
-fn load_documents(conn: &Connection) -> Result<Vec<DocumentRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, source_id, external_id, title, modified_at, mime
-         FROM documents
-         WHERE deleted = 0
-         ORDER BY id",
-    )?;
-
-    let rows = stmt.query_map([], |row| {
-        Ok(DocumentRow {
-            id: row.get(0)?,
-            source_id: row.get(1)?,
-            path: row.get(2)?,
-            title: row.get(3)?,
-            modified_at: row.get(4)?,
-            mime: row.get(5)?,
-        })
-    })?;
-
-    let mut documents = Vec::new();
-
-    for row in rows {
-        documents.push(row?);
-    }
-
-    Ok(documents)
+fn document_row(row: &rusqlite::Row) -> rusqlite::Result<DocumentRow> {
+    Ok(DocumentRow {
+        id: row.get(0)?,
+        source_id: row.get(1)?,
+        path: row.get(2)?,
+        title: row.get(3)?,
+        modified_at: row.get(4)?,
+        mime: row.get(5)?,
+    })
 }
 
 /// Text for a Google Drive document. Text saved by an earlier rebuild is
@@ -155,205 +159,272 @@ where
     })
 }
 
-pub fn rebuild(state: &AppState) -> Result<()> {
-    tracing::info!("========== INDEX REBUILD START ==========");
+// ---------- database bookkeeping ----------
 
-    // 1. Load documents from SQLite.
-    let documents = state.with_db(load_documents)?;
+/// Up to `limit` live documents that are new or changed since they were last
+/// indexed.
+fn load_pending(conn: &Connection, limit: usize) -> Result<Vec<DocumentRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, source_id, external_id, title, modified_at, mime
+         FROM documents
+         WHERE deleted = 0 AND indexed_at IS NULL
+         ORDER BY id
+         LIMIT ?1",
+    )?;
+    let rows = stmt.query_map([limit as i64], document_row)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Deleted documents that are still in the search index.
+fn load_removed(conn: &Connection) -> Result<Vec<i64>> {
+    let mut stmt =
+        conn.prepare("SELECT id FROM documents WHERE deleted = 1 AND indexed_at IS NOT NULL")?;
+    let ids = stmt.query_map([], |row| row.get(0))?;
+    Ok(ids.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Number of documents waiting to be indexed, for the status display.
+pub fn pending_count(conn: &Connection) -> Result<u32> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM documents WHERE deleted = 0 AND indexed_at IS NULL",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
+/// IDs of a source's documents, so they can be dropped from the index before
+/// the source and its rows are deleted.
+pub fn source_document_ids(conn: &Connection, source_id: i64) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare("SELECT id FROM documents WHERE source_id = ?1")?;
+    let ids = stmt.query_map([source_id], |row| row.get(0))?;
+    Ok(ids.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Records that `document` is in the index. Does nothing if the document
+/// changed while it was being indexed, so the newer version is picked up on
+/// the next pass.
+fn mark_indexed(conn: &Connection, document: &DocumentRow) -> Result<()> {
+    conn.execute(
+        "UPDATE documents SET indexed_at = unixepoch()
+         WHERE id = ?1 AND indexed_at IS NULL AND modified_at IS ?2",
+        rusqlite::params![document.id, document.modified_at],
+    )?;
+    Ok(())
+}
+
+/// Records that a deleted document is no longer in the index.
+fn mark_removed(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE documents SET indexed_at = NULL WHERE id = ?1 AND deleted = 1",
+        [id],
+    )?;
+    Ok(())
+}
+
+// ---------- indexing ----------
+
+/// Starts the background indexer thread.
+pub fn spawn(app: tauri::AppHandle) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("indexer".into())
+        .spawn(move || run(&app.state::<AppState>()))?;
+    Ok(())
+}
+
+fn run(state: &AppState) {
+    if let Err(e) = reconcile(state) {
+        tracing::error!("could not check the search index: {e}");
+    }
+
+    // Documents whose text could not be downloaded, and when to try again.
+    let mut retry_at: HashMap<i64, Instant> = HashMap::new();
+
+    loop {
+        match index_pass(state, &mut retry_at) {
+            Ok(true) => continue, // a full batch: more may be waiting
+            Ok(false) => {}
+            Err(e) => tracing::error!("indexing pass failed: {e}"),
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Re-indexes everything if the index and the database disagree: the index
+/// is empty (first run, deleted, or recreated after a schema change) or no
+/// document was ever marked indexed (versions before background indexing).
+/// Cloud text is reused from the database, so nothing is downloaded again.
+fn reconcile(state: &AppState) -> Result<()> {
+    let marked: i64 = state.with_db(|conn| {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM documents WHERE indexed_at IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?)
+    })?;
+    if marked > 0 && state.index.num_docs()? > 0 {
+        return Ok(());
+    }
+
+    state.index.clear()?;
+    state.with_db(|conn| {
+        conn.execute("UPDATE documents SET indexed_at = NULL", [])?;
+        Ok(())
+    })?;
+    tracing::info!("search index will be rebuilt in the background");
+    Ok(())
+}
+
+/// Indexes up to `BATCH_SIZE` pending documents and drops deleted ones from
+/// the index. Returns true if a full batch was processed.
+fn index_pass(state: &AppState, retry_at: &mut HashMap<i64, Instant>) -> Result<bool> {
+    let now = Instant::now();
+    retry_at.retain(|_, at| *at > now);
+
+    let removed = state.with_db(load_removed)?;
+    let fetched = state.with_db(|conn| load_pending(conn, BATCH_SIZE + retry_at.len()))?;
+    let pending: Vec<DocumentRow> = fetched
+        .into_iter()
+        .filter(|d| !retry_at.contains_key(&d.id))
+        .take(BATCH_SIZE)
+        .collect();
+
+    if removed.is_empty() && pending.is_empty() {
+        return Ok(false);
+    }
+
+    for &id in &removed {
+        state.index.delete(id)?;
+    }
+
+    let batch_full = pending.len() == BATCH_SIZE;
+    let mut done = Vec::with_capacity(pending.len());
+    for document in pending {
+        match index_document(state, &document) {
+            Ok(()) => done.push(document),
+            Err(error) => {
+                tracing::warn!(
+                    path = %document.path,
+                    %error,
+                    "could not index document; will retry in {} minutes",
+                    RETRY_AFTER.as_secs() / 60
+                );
+                retry_at.insert(document.id, now + RETRY_AFTER);
+            }
+        }
+    }
+
+    // Commit before recording progress: a crash in between only means some
+    // documents are indexed twice, never that one is marked but missing.
+    state.index.commit()?;
+    state.with_db(|conn| {
+        for &id in &removed {
+            mark_removed(conn, id)?;
+        }
+        for document in &done {
+            mark_indexed(conn, document)?;
+        }
+        Ok(())
+    })?;
 
     tracing::info!(
-        total_documents = documents.len(),
-        "CHECK 1: DOCUMENTS LOADED FROM SQLITE"
+        indexed = done.len(),
+        removed = removed.len(),
+        "search index updated"
     );
+    Ok(batch_full)
+}
 
-    // 2. Clear the previous Tantivy index.
-    state.index.clear()?;
+/// Reads a document's text. `Ok(None)` means there is nothing to index (a
+/// missing, unsupported or unreadable local file; it is tried again when it
+/// changes). An error means a download failed and should be retried.
+fn read_text(state: &AppState, document: &DocumentRow) -> Result<Option<ExtractedDocument>> {
+    if let Some(file_id) = document.path.strip_prefix("gdrive:") {
+        return google_drive_text(state, document, file_id).map(Some);
+    }
+    if let Some(page_id) = document.path.strip_prefix("notion:") {
+        return notion_text(state, document, page_id).map(Some);
+    }
 
-    tracing::info!("CHECK 2: OLD INDEX CLEARED");
+    let path = Path::new(&document.path);
+    if !path.is_file() || !crate::extract::TextExtractor.supports(path) {
+        tracing::debug!(path = %path.display(), "not indexed: missing or unsupported file");
+        return Ok(None);
+    }
+    match crate::extract::extract(path) {
+        Ok(extracted) => Ok(Some(extracted)),
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "could not extract text");
+            Ok(None)
+        }
+    }
+}
 
-    let mut indexed_count = 0usize;
-    let mut skipped_count = 0usize;
-    let mut extraction_count = 0usize;
+fn index_document(state: &AppState, document: &DocumentRow) -> Result<()> {
+    let Some(extracted) = read_text(state, document)? else {
+        return Ok(());
+    };
 
-    // 3. Process every document.
-    for document in documents {
-        tracing::info!(
-            document_id = document.id,
-            source_id = document.source_id,
-            path = %document.path,
-            title = %document.title,
-            "CHECK 3: PROCESSING DOCUMENT"
-        );
-
-        // Google Drive documents are downloaded instead of read from disk.
-        let extracted = if let Some(file_id) = document.path.strip_prefix("gdrive:") {
-            match google_drive_text(state, &document, file_id) {
-                Ok(value) => value,
-                Err(error) => {
-                    tracing::error!(
-                        path = %document.path,
-                        error = %error,
-                        "CHECK FAILED: GOOGLE DRIVE DOWNLOAD ERROR"
-                    );
-
-                    skipped_count += 1;
-                    continue;
-                }
-            }
-        } else if let Some(page_id) = document.path.strip_prefix("notion:") {
-            match notion_text(state, &document, page_id) {
-                Ok(value) => value,
-                Err(error) => {
-                    tracing::error!(
-                        path = %document.path,
-                        error = %error,
-                        "CHECK FAILED: NOTION DOWNLOAD ERROR"
-                    );
-
-                    skipped_count += 1;
-                    continue;
-                }
-            }
+    // Files without text (e.g. scanned PDFs) are still indexed by name.
+    let indexed = IndexedDocument {
+        document_id: document.id,
+        source_id: document.source_id,
+        title: if extracted.title.is_empty() {
+            document.title.clone()
         } else {
-            let path = Path::new(&document.path);
+            extracted.title
+        },
+        content: extracted.text,
+        location: document.path.clone(),
+        modified_at: document.modified_at,
+    };
 
-            // 4. Check whether the file exists.
-            if !path.is_file() {
-                tracing::warn!(
-                    path = %path.display(),
-                    "CHECK FAILED: FILE DOES NOT EXIST"
-                );
+    state.index.upsert(&indexed)?;
 
-                skipped_count += 1;
-                continue;
-            }
+    // Keyword search works without an embedding, so a failure here is only logged.
+    if let Err(error) = save_embedding(state, &indexed) {
+        tracing::warn!(document_id = indexed.document_id, %error, "could not save embedding");
+    }
 
-            tracing::info!(
-                path = %path.display(),
-                "CHECK 4: FILE EXISTS"
-            );
+    tracing::debug!(
+        document_id = indexed.document_id,
+        path = %indexed.location,
+        chars = indexed.content.len(),
+        "document indexed"
+    );
+    Ok(())
+}
 
-            // 5. Check whether the extractor supports the extension.
-            if !crate::extract::TextExtractor.supports(path) {
-                tracing::warn!(
-                    path = %path.display(),
-                    extension = ?path.extension(),
-                    "CHECK FAILED: UNSUPPORTED FILE EXTENSION"
-                );
+/// Saves the text and its embedding for semantic search. The embedding is
+/// only recomputed when the text changed.
+fn save_embedding(state: &AppState, indexed: &IndexedDocument) -> Result<()> {
+    let document_id = indexed.document_id;
 
-                skipped_count += 1;
-                continue;
-            }
+    // Same text as last time: keep the vector, refresh the timestamp so the
+    // cached cloud text counts as current.
+    let unchanged = state.with_db(|conn| {
+        Ok(conn.execute(
+            "UPDATE document_embeddings SET updated_at = unixepoch()
+             WHERE document_id = ?1 AND content = ?2",
+            rusqlite::params![document_id, indexed.content],
+        )? > 0)
+    })?;
+    if unchanged {
+        return Ok(());
+    }
 
-            tracing::info!(
-                path = %path.display(),
-                "CHECK 5: FILE EXTENSION SUPPORTED"
-            );
+    // Keep the text bounded for the embedding model.
+    let input = format!(
+        "{}\n\n{}",
+        indexed.title,
+        indexed.content.chars().take(6000).collect::<String>()
+    );
+    let vector = crate::embed::embed_text(&input)?;
+    let blob = crate::embed::vector_to_blob(&vector);
+    let dimensions = vector.len() as i64;
 
-            // 6. Extract text.
-            tracing::info!(
-                path = %path.display(),
-                "CHECK 6: STARTING TEXT EXTRACTION"
-            );
-
-            match crate::extract::extract(path) {
-                Ok(value) => value,
-                Err(error) => {
-                    tracing::error!(
-                        path = %path.display(),
-                        error = %error,
-                        "CHECK FAILED: TEXT EXTRACTION ERROR"
-                    );
-
-                    skipped_count += 1;
-                    continue;
-                }
-            }
-        };
-
-        extraction_count += 1;
-
-        tracing::info!(
-            path = %document.path,
-            extracted_chars = extracted.text.chars().count(),
-            extracted_title = %extracted.title,
-            "CHECK 7: TEXT EXTRACTION COMPLETED"
-        );
-
-        // 7. Check extracted text.
-        if extracted.text.trim().is_empty() {
-            tracing::warn!(
-                path = %document.path,
-                "CHECK FAILED: EXTRACTED TEXT IS EMPTY"
-            );
-
-            skipped_count += 1;
-            continue;
-        }
-
-        // 8. Construct the Tantivy document.
-        let indexed = IndexedDocument {
-            document_id: document.id,
-            source_id: document.source_id,
-            title: if extracted.title.is_empty() {
-                document.title
-            } else {
-                extracted.title
-            },
-            content: extracted.text,
-            location: document.path.clone(),
-            modified_at: document.modified_at,
-        };
-
-        tracing::info!(
-            document_id = indexed.document_id,
-            path = %indexed.location,
-            "CHECK 8: SENDING DOCUMENT TO TANTIVY"
-        );
-
-        // 9. Add the document to Tantivy.
-        // 9. Generate and save a local embedding.
-        // Keep the text bounded for the embedding model.
-        let embedding_input = format!(
-            "{}\n\n{}",
-            indexed.title,
-            indexed.content.chars().take(6000).collect::<String>()
-        );
-
-        let embedding = match crate::embed::embed_text(&embedding_input) {
-            Ok(vector) => Some(vector),
-            Err(error) => {
-                tracing::error!(
-                    document_id = indexed.document_id,
-                    error = %error,
-                    "Could not generate embedding; keeping keyword indexing available"
-                );
-                None
-            }
-        };
-
-        // Add the document to Tantivy regardless of embedding success.
-        if let Err(error) = state.index.upsert(&indexed) {
-            tracing::error!(
-                document_id = indexed.document_id,
-                path = %indexed.location,
-                error = %error,
-                "CHECK FAILED: TANTIVY UPSERT ERROR"
-            );
-
-            return Err(error);
-        }
-
-        // Save the extracted text and vector for semantic search.
-        if let Some(vector) = embedding {
-            let content = indexed.content.clone();
-            let vector_blob = crate::embed::vector_to_blob(&vector);
-            let dimensions = vector.len() as i64;
-            let document_id = indexed.document_id;
-
-            state.with_db(|conn| {
-                conn.execute(
-                    "INSERT INTO document_embeddings
+    state.with_db(|conn| {
+        conn.execute(
+            "INSERT INTO document_embeddings
                 (document_id, content, embedding, dimensions, updated_at)
              VALUES (?1, ?2, ?3, ?4, unixepoch())
              ON CONFLICT(document_id) DO UPDATE SET
@@ -361,41 +432,117 @@ pub fn rebuild(state: &AppState) -> Result<()> {
                 embedding = excluded.embedding,
                 dimensions = excluded.dimensions,
                 updated_at = unixepoch()",
-                    rusqlite::params![document_id, content, vector_blob, dimensions],
-                )?;
+            rusqlite::params![document_id, indexed.content, blob, dimensions],
+        )?;
+        Ok(())
+    })
+}
 
-                Ok(())
-            })?;
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{self, DocumentUpsert};
 
-        indexed_count += 1;
-
-        tracing::info!(
-            document_id = indexed.document_id,
-            "CHECK 9: DOCUMENT ADDED TO TANTIVY"
-        );
+    fn conn_with_source() -> Connection {
+        let conn = db::open_in_memory().unwrap();
+        conn.execute("INSERT INTO sources (id, kind) VALUES (1, 'local')", [])
+            .unwrap();
+        conn
     }
 
-    // 10. Commit the index.
-    tracing::info!(
-        indexed = indexed_count,
-        skipped = skipped_count,
-        extracted = extraction_count,
-        "CHECK 10: COMMITTING TANTIVY INDEX"
-    );
+    fn upsert(conn: &Connection, path: &str, modified_at: i64) {
+        let doc = DocumentUpsert {
+            external_id: path,
+            title: path,
+            mime: None,
+            modified_at: Some(modified_at),
+        };
+        db::upsert_document(conn, 1, &doc, 100).unwrap();
+    }
 
-    state.index.commit()?;
+    fn pending_paths(conn: &Connection) -> Vec<String> {
+        load_pending(conn, 100)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.path)
+            .collect()
+    }
 
-    tracing::info!("CHECK 11: TANTIVY COMMIT COMPLETED");
+    #[test]
+    fn indexed_documents_are_no_longer_pending() {
+        let conn = conn_with_source();
+        upsert(&conn, "/a.txt", 10);
+        upsert(&conn, "/b.txt", 10);
+        assert_eq!(pending_count(&conn).unwrap(), 2);
 
-    // 11. Final summary.
-    tracing::info!(
-        total_documents = indexed_count + skipped_count,
-        extracted = extraction_count,
-        indexed = indexed_count,
-        skipped = skipped_count,
-        "========== INDEX REBUILD FINISHED =========="
-    );
+        let a = load_pending(&conn, 1).unwrap().remove(0);
+        mark_indexed(&conn, &a).unwrap();
 
-    Ok(())
+        assert_eq!(pending_paths(&conn), ["/b.txt"]);
+        assert_eq!(pending_count(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn unchanged_documents_are_not_indexed_again() {
+        let conn = conn_with_source();
+        upsert(&conn, "/a.txt", 10);
+        let a = load_pending(&conn, 1).unwrap().remove(0);
+        mark_indexed(&conn, &a).unwrap();
+
+        upsert(&conn, "/a.txt", 10); // seen again by a crawl, not modified
+        assert!(pending_paths(&conn).is_empty());
+
+        upsert(&conn, "/a.txt", 20); // modified
+        assert_eq!(pending_paths(&conn), ["/a.txt"]);
+    }
+
+    #[test]
+    fn a_document_changed_while_indexing_stays_pending() {
+        let conn = conn_with_source();
+        upsert(&conn, "/a.txt", 10);
+        let old = load_pending(&conn, 1).unwrap().remove(0);
+
+        upsert(&conn, "/a.txt", 20); // edited before the indexer finished
+        mark_indexed(&conn, &old).unwrap();
+
+        assert_eq!(pending_paths(&conn), ["/a.txt"]);
+    }
+
+    #[test]
+    fn deleted_documents_are_removed_once() {
+        let conn = conn_with_source();
+        upsert(&conn, "/a.txt", 10);
+        let a = load_pending(&conn, 1).unwrap().remove(0);
+        mark_indexed(&conn, &a).unwrap();
+
+        db::mark_deleted_under(&conn, 1, "/a.txt", '/').unwrap();
+        assert_eq!(load_removed(&conn).unwrap(), [a.id]);
+        assert_eq!(pending_count(&conn).unwrap(), 0);
+
+        mark_removed(&conn, a.id).unwrap();
+        assert!(load_removed(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn source_document_ids_lists_only_that_source() {
+        let conn = conn_with_source();
+        conn.execute("INSERT INTO sources (id, kind) VALUES (2, 'local')", [])
+            .unwrap();
+        upsert(&conn, "/a.txt", 10);
+        db::upsert_document(
+            &conn,
+            2,
+            &DocumentUpsert {
+                external_id: "/b.txt",
+                title: "b",
+                mime: None,
+                modified_at: None,
+            },
+            100,
+        )
+        .unwrap();
+
+        assert_eq!(source_document_ids(&conn, 1).unwrap().len(), 1);
+        assert_eq!(source_document_ids(&conn, 2).unwrap().len(), 1);
+    }
 }
